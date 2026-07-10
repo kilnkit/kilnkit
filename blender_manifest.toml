@@ -1,0 +1,27 @@
+schema_version = "1.0.0"
+
+id = "kilnkit"
+version = "1.0.0"
+name = "Kilnkit"
+tagline = "Turn a texture folder into a render-ready PBR asset"
+maintainer = "Deokho Kim <kilnkithq@gmail.com>"
+type = "add-on"
+
+website = "https://kilnkit.com"
+
+# Add-on tags must come from Blender's fixed add-on tag list.
+tags = ["Material", "Render", "Pipeline", "UV"]
+
+blender_version_min = "4.5.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+copyright = [
+  "2026 Deokho Kim",
+]
+
+# Core is pure Python with zero external dependencies — no bundled wheels/binaries.
+[permissions]
+# Blender caps each permission string at 64 characters — `extension validate` rejects longer.
+files = "Read texture folders; write renders and exported .blend assets"
