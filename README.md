@@ -93,7 +93,8 @@ many objects, or to import a parent folder of sub-folders in one go, use the **B
 
 ## Development
 
-Kilnkit is built and maintained by a working Blender artist, for his own daily work.
+Kilnkit is designed, built and maintained by one person — a Blender user who kept
+meeting the same finishing chores in his own scenes, and finally built the tool for them.
 
 Parts of the code were written with the help of an AI coding assistant (Claude Code).
 The design decisions, the testing and the release are the author's, and the author is
