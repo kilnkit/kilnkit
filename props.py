@@ -4,7 +4,7 @@ import bpy
 # Constants & defaults
 # ================================================================
 
-ADDON_VERSION = "v1.0.1"
+ADDON_VERSION = "v1.0.2"
 
 PBR_RULES_DEFAULT = {
     'basecolor': '_c',
