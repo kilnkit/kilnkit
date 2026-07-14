@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "kilnkit"
-version = "1.0.0"
+version = "1.0.1"
 name = "Kilnkit"
 tagline = "Turn a texture folder into a render-ready PBR asset"
 maintainer = "Deokho Kim <kilnkithq@gmail.com>"

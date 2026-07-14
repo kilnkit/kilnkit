@@ -436,6 +436,30 @@ _ko = {
     ("*", "Not saved — using Home/Kilnkit_Renders"): "미저장 — Home/Kilnkit_Renders에 저장됨",
     ("*", "Transparent bg → MP4 shows black"): "투명 배경 → MP4는 검은 배경",
     ("*", "(PNG sequence keeps the alpha)"): "(PNG 시퀀스는 알파 유지)",
+
+    # ── turntable block + render-flow strings (v1.0.1 — were shipping untranslated) ──
+    ("*", "Turntable — a 360° spin video"): "턴테이블 — 360° 회전 영상",
+    ("*", "No FFmpeg in this Blender — saves as PNG sequence"): "이 블렌더엔 FFmpeg 없음 — PNG 시퀀스로 저장됩니다",
+    ("*", " (no FFmpeg in this Blender — saved as a PNG sequence)"): " (이 블렌더엔 FFmpeg가 없어 PNG 시퀀스로 저장됨)",
+    ("*", "A render is already running — try again when it finishes"): "이미 렌더가 진행 중 — 끝난 뒤 다시 시도하세요",
+    ("*", "Already exists, skipped (If File Exists = Skip)"): "같은 파일이 이미 있어 건너뜀 (이미 있으면 = 건너뛰기)",
+    ("*", "Rendering 4 angles — the render window will step through them"): "4개 앵글 렌더 중 — 렌더 창이 차례로 진행됩니다",
+    ("*", "Rendering turntable — {n} frames, the render window shows progress"): "턴테이블 렌더 중 — {n} 프레임, 진행은 렌더 창에 표시",
+    ("*", "Turntable cancelled"): "턴테이블 렌더 중단됨",
+    ("*", "Turntable render failed"): "턴테이블 렌더 실패",
+    ("*", "Turntable saved: {name} → {dir}{note}"): "턴테이블 저장: {name} → {dir}{note}",
+    ("*", "{label} {i}/{n}…  (Esc to cancel)"): "{label} {i}/{n}…  (Esc로 중단)",
+    ("*", "Orbit the camera 360° around the selected asset and render a spinning turntable (MP4 video or PNG sequence). Non-blocking — the render window shows progress, Esc cancels"): "선택한 에셋 둘레로 카메라를 360° 돌려 턴테이블을 렌더합니다 (MP4 영상 또는 PNG 시퀀스). 비차단 — 렌더 창에 진행 표시, Esc로 중단",
+    ("*", "Render front, 3/4, side, and top views to PNG (file name = asset name_angle). One angle at a time without blocking — the render window steps through them, Esc cancels"): "정면·3/4·측면·탑뷰를 PNG로 렌더합니다 (파일명 = 에셋이름_앵글). 한 각도씩 비차단 진행 — 렌더 창이 차례로 넘어가고 Esc로 중단",
+    ("*", "AO Strength"): "AO 강도",
+    ("*", "Smart UV"): "스마트 UV",
+    ("*", "MP4 Video"): "MP4 영상",
+    ("*", "PNG Sequence"): "PNG 시퀀스",
+    ("*", "A single .mp4 video (H.264) — easiest to share and upload"): "단일 .mp4 영상 (H.264) — 공유·업로드가 가장 쉬움",
+    ("*", "One PNG per frame (_0001, _0002…) — for compositing or a transparent background"): "프레임마다 PNG 한 장 (_0001, _0002…) — 합성·투명 배경용",
+    ("*", "Turntable output — a single video file or a numbered PNG sequence"): "턴테이블 출력 — 영상 파일 하나 또는 번호 붙은 PNG 시퀀스",
+    ("*", "Frames for one full 360° turn — more is smoother but slower to render (60 @ 24fps ≈ 2.5 s loop)"): "한 바퀴(360°) 프레임 수 — 많을수록 부드럽지만 렌더는 느려짐 (60 @ 24fps ≈ 2.5초 루프)",
+    ("*", "Playback frame rate of the turntable video"): "턴테이블 영상의 재생 프레임레이트",
 }
 
 # Operator bl_label strings — Blender may look these up with either the
@@ -483,6 +507,7 @@ _op_labels = {
     "Apply Render Settings": "렌더 설정 적용",
     "Render & Save": "렌더 & 저장",
     "Render 4 Multi-Angles": "멀티앵글 4장 렌더",
+    "Render Turntable": "턴테이블 렌더",
 }
 for _en, _tr in _op_labels.items():
     _ko[("*", _en)] = _tr
