@@ -4,7 +4,7 @@ import bpy
 # Constants & defaults
 # ================================================================
 
-ADDON_VERSION = "v1.0.2"
+ADDON_VERSION = "v1.1.0"
 
 PBR_RULES_DEFAULT = {
     'basecolor': '_c',
@@ -152,6 +152,38 @@ def _preset_update(self, context):
         setattr(self, f"suffix_{key}", val)
 
 
+# Panel tab order — canonical ids (must mirror the active_tab enum). The prefs CSV
+# stores a user order; fn_tab_order sanitizes it so renamed/added tabs never break.
+TAB_ORDER_DEFAULT = ('MAIN', 'SETTINGS', 'BATCH', 'LIBRARY', 'RENDER', 'PUBLISH')
+
+
+def fn_tab_order(prefs=None):
+    """Sanitized tab order list: parse the prefs CSV, drop unknown ids, dedupe,
+    then append any missing tabs in default order (robust to old saved prefs)."""
+    raw = ""
+    if prefs is None:
+        ad = bpy.context.preferences.addons.get(__package__)
+        prefs = ad.preferences if ad else None
+    if prefs is not None:
+        raw = getattr(prefs, "tab_order", "") or ""
+    out = []
+    for t in (s.strip().upper() for s in raw.split(",")):
+        if t in TAB_ORDER_DEFAULT and t not in out:
+            out.append(t)
+    out += [t for t in TAB_ORDER_DEFAULT if t not in out]
+    return out
+
+
+def fn_tab_order_moved(order, index, direction):
+    """Swap order[index] with its neighbor ('UP'/'DOWN') — None when out of range."""
+    j = index + (-1 if direction == 'UP' else 1)
+    if not (0 <= index < len(order) and 0 <= j < len(order)):
+        return None
+    order = list(order)
+    order[index], order[j] = order[j], order[index]
+    return order
+
+
 class KILNKIT_Preferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -168,6 +200,10 @@ class KILNKIT_Preferences(bpy.types.AddonPreferences):
         default='AUTO',
         update=_preset_update,
     )
+
+    tab_order: bpy.props.StringProperty(
+        name="Tab Order", default="",
+        description="Panel tab order — reorder with the arrows below")
 
     suffix_basecolor: bpy.props.StringProperty(name="Base Color",  default='_c')
     suffix_normal:    bpy.props.StringProperty(name="Normal",       default='_n')
@@ -193,6 +229,25 @@ class KILNKIT_Preferences(bpy.types.AddonPreferences):
         grid.prop(self, "suffix_metallic")
         l.separator()
         l.operator("kilnkit.reset_suffix", text="Reset Custom Defaults", icon='LOOP_BACK')
+        l.separator()
+        l.label(text="Panel Tab Order", icon='PRESET')
+        _enum_items = {i.identifier: i.name
+                       for i in KILNKIT_SceneProps.bl_rna.properties['active_tab'].enum_items}
+        try:
+            from .edition import EDITION as _ed
+        except Exception:
+            _ed = "full"
+        _order = fn_tab_order(self)
+        col = l.column(align=True)
+        for _i, _tid in enumerate(_order):
+            if _tid == 'PUBLISH' and _ed == 'lite':
+                continue   # lite never draws the paid tab — don't advertise it here either
+            row = col.row(align=True)
+            row.label(text=_enum_items.get(_tid, _tid))
+            op = row.operator("kilnkit.tab_move", text="", icon='TRIA_UP')
+            op.index = _i; op.direction = 'UP'
+            op = row.operator("kilnkit.tab_move", text="", icon='TRIA_DOWN')
+            op.index = _i; op.direction = 'DOWN'
 
 
 # ================================================================
@@ -347,6 +402,24 @@ def _set_camera_lens(self, value):
         cam.data.lens = value                      # live-adjust the placed camera
 
 
+# Turntable frame budget — the hard cap is deliberately huge ("no limit" in practice);
+# past TURNTABLE_HEAVY_FRAMES the UI shows the render count and warns instead of clamping.
+TURNTABLE_FRAMES_MIN = 12
+TURNTABLE_FRAMES_MAX = 14400
+TURNTABLE_HEAVY_FRAMES = 600
+
+
+def _get_turntable_seconds(self):
+    # Proxy over turntable_frames — "seconds per turn" is the intuition ("how fast does
+    # it spin"), frames stay the storage (queue per-job overrides, tests, back-compat).
+    return self.turntable_frames / max(self.turntable_fps, 1)
+
+
+def _set_turntable_seconds(self, value):
+    self.turntable_frames = max(TURNTABLE_FRAMES_MIN,
+                                min(TURNTABLE_FRAMES_MAX, round(value * max(self.turntable_fps, 1))))
+
+
 # (slider attribute, node name, input index, tolerance) — scalar channels only
 # (the uv_scale vector is handled separately below)
 _SYNC_MAP = (
@@ -437,13 +510,19 @@ def _active_slot_update(self, context):
 
 class KILNKIT_SceneProps(bpy.types.PropertyGroup):
 
+    # ⚠ Values are pinned: the enum is stored in .blend files as the item's int value,
+    # so reordering without pins would silently remap saved tabs (uv_method precedent).
+    # 'PUBLISH' exists in both editions (props.py ships identically in lite) but is only
+    # DRAWN in full — ui.py's tab bar skips it and the dispatch falls back when a full-
+    # edition .blend lands on a lite install. Label/description stay edition-neutral.
     active_tab: bpy.props.EnumProperty(
         items=[
-            ('MAIN',     "Main",     "Manage material slots"),
-            ('SETTINGS', "Settings", "Pipeline settings"),
-            ('BATCH',    "Batch",    "Run on multiple objects"),
-            ('LIBRARY',  "Library",  "Build materials from folders without a mesh and register them as assets"),
-            ('RENDER',   "Render",   "Automate environment, lighting, camera, and render output"),
+            ('MAIN',     "Main",     "Manage material slots", 0),
+            ('SETTINGS', "Settings", "Pipeline settings", 1),
+            ('BATCH',    "Batch",    "Run on multiple objects", 2),
+            ('LIBRARY',  "Library",  "Build materials from folders without a mesh and register them as assets", 3),
+            ('RENDER',   "Render",   "Automate environment, lighting, camera, and render output", 4),
+            ('PUBLISH',  "Publish",  "Batch render and deliver finished assets", 5),
         ],
         default='MAIN'
     )
@@ -531,8 +610,40 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
         description="Off renames only the object and mesh. On renames materials into the same family — single: <name>, multi: <name>_<slot folder>"
     )
 
+    # Engine-style type prefixes (2026-07-15 review) — values pinned (.blend stores the int).
+    # FAMILY is the existing behavior and stays the default; UE pins the de-facto global
+    # convention; CUSTOM exposes two fields. Applied by fn_type_prefix in operators.py,
+    # so Apply Naming, the batch preview, and the guide judgment all follow automatically.
+    naming_style: bpy.props.EnumProperty(
+        name="Naming Style",
+        description="How type prefixes are applied when renaming",
+        items=[
+            ('FAMILY', "Family Name", "One family name for object, mesh, and materials — Blender Studio style", 0),
+            ('UE', "Game Engine (SM_/M_)", "Type prefixes for game engines — SM_ for the object and mesh, M_ for materials", 1),
+            ('CUSTOM', "Custom Prefixes", "Your own type prefixes — set them below", 2),
+        ],
+        default='FAMILY',
+    )
+    naming_custom_mesh: bpy.props.StringProperty(
+        name="Mesh Prefix",
+        description="Type prefix for the object and mesh — a separator _ is added when missing",
+        default="SM",
+    )
+    naming_custom_mat: bpy.props.StringProperty(
+        name="Material Prefix",
+        description="Type prefix for materials — a separator _ is added when missing",
+        default="M",
+    )
+
     # Main tab toggle
     show_advanced: bpy.props.BoolProperty(name="Fine Tuning", default=False)
+
+    # Finishing-guide strip (above the tab bar) fold state — a Scene property per the
+    # persistence rule, so each .blend remembers whether the guide is open.
+    guide_show: bpy.props.BoolProperty(
+        name="Finishing Guide",
+        description="Show the five-step finishing journey above the tabs",
+        default=True)
 
     # Node → slider auto-sync (mirrors direct Shader Editor edits)
     auto_sync: bpy.props.BoolProperty(
@@ -599,12 +710,10 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
         ],
         default='EEVEE',
     )
-    render_res: bpy.props.EnumProperty(
-        name="Resolution",
-        items=[('512', "512", "512×512"), ('1024', "1K", "1024×1024"),
-               ('2048', "2K", "2048×2048"), ('4096', "4K", "4096×4096")],
-        default='1024',
-    )
+    # render_res 프리셋 enum은 제거됨(2026-07-16) — 해상도는 네이티브
+    # scene.render.resolution_x/y를 렌더 탭에 직접 노출 + kilnkit.set_resolution
+    # 비율 프리셋 버튼이 그 값을 직접 쓴다(Output 경로와 같은 네이티브 위임 B 철학,
+    # 세션26 사용자 피드백: 비율 프리셋 + F12와 항상 동기).
     render_samples: bpy.props.IntProperty(
         name="Render Samples", min=1, soft_max=1024, max=4096, default=512,
         description="Final render sample count — light default of 512 (plenty for visual checks). The viewport automatically uses fewer"
@@ -622,14 +731,26 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
         description="What to do when the file name already exists (numbers are an _NNN take counter, unlike frame numbers)"
     )
 
+    render_isolate: bpy.props.BoolProperty(
+        name="Isolate Asset in Renders", default=False,
+        description="While rendering an asset, hide every other mesh so nothing else appears in the shot — visibility is restored afterwards"
+    )
+
     # ── Render output — turntable (360° camera orbit) ──
+    turntable_seconds: bpy.props.FloatProperty(
+        name="Seconds per Turn", min=0.05, soft_min=0.5, soft_max=15.0, max=1200.0,
+        step=10, precision=1,
+        get=_get_turntable_seconds, set=_set_turntable_seconds,
+        description="How long one full 360° turn takes — slower shows the asset off better. Frames are derived automatically (seconds × FPS), and every frame is one render"
+    )
     turntable_frames: bpy.props.IntProperty(
-        name="Frames", min=12, soft_max=120, max=240, default=60,
-        description="Frames for one full 360° turn — more is smoother but slower to render (60 @ 24fps ≈ 2.5 s loop)"
+        name="Frames", min=TURNTABLE_FRAMES_MIN, soft_max=TURNTABLE_HEAVY_FRAMES,
+        max=TURNTABLE_FRAMES_MAX, default=144,
+        description="Frames for one full 360° turn — derived from Seconds per Turn × FPS (144 @ 24fps = 6 s loop)"
     )
     turntable_fps: bpy.props.IntProperty(
-        name="FPS", min=12, soft_max=30, max=60, default=24,
-        description="Playback frame rate of the turntable video"
+        name="FPS", min=12, soft_max=60, max=240, default=24,
+        description="Playback frame rate of the turntable video — higher is smoother but renders more frames for the same seconds"
     )
     turntable_format: bpy.props.EnumProperty(
         name="Format",
@@ -641,11 +762,13 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
         description="Turntable output — a single video file or a numbered PNG sequence"
     )
 
-    # Render tab section toggles
-    show_render_env:    bpy.props.BoolProperty(name="Environment / Background", default=True)
-    show_render_light:  bpy.props.BoolProperty(name="Lighting",   default=True)
-    show_render_camera: bpy.props.BoolProperty(name="Camera",     default=True)
-    show_render_output: bpy.props.BoolProperty(name="Render Settings & Output", default=True)
+    # Render tab section toggles — all collapsed by default (Blender Properties idiom:
+    # headers first, open what you need; a fully expanded tab was 50+ controls).
+    show_render_env:    bpy.props.BoolProperty(name="Environment / Background", default=False)
+    show_render_light:  bpy.props.BoolProperty(name="Lighting",   default=False)
+    show_render_camera: bpy.props.BoolProperty(name="Camera",     default=False)
+    show_render_output: bpy.props.BoolProperty(name="Render Settings & Output", default=False)
+    show_render_turntable: bpy.props.BoolProperty(name="Turntable", default=False)
 
     # Settings tab section toggles
     show_pipeline: bpy.props.BoolProperty(name="One-Click Steps", default=True)

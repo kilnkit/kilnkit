@@ -15,6 +15,10 @@ add-on does them for you, with **zero external dependencies** in the core.
 
 ## Features
 
+- **Finishing guide** — a five-step journey strip above every tab (material → UV → naming
+  → shot → output), judged from the scene's *real* state, with an outcome preview (final
+  name, resolution, save location), a receipt when done, and a one-click "next step" that
+  lands on the right controls.
 - **One-click PBR** — scale → texture mapping → node graph, wired to Principled BSDF.
   The default is a seam-free triplanar **preview** that works on any shape without touching
   your UVs.
@@ -33,17 +37,20 @@ add-on does them for you, with **zero external dependencies** in the core.
   register them as assets, and export one packed `.blend` per material to your asset library.
 - **Multi-asset cleanup** — merge duplicate materials (by texture set), generate
   non-destructive LODs (`_LOD0..n`), and apply unified naming so objects, meshes, and
-  materials share one family name.
+  materials share one family name — or game-engine type prefixes (`SM_` / `M_`), or your own.
 - **Batch mode** — apply to many selected objects at once, or import a parent folder and
   get one slot per sub-folder, all without freezing the UI.
 - **Render output automation** — set up a studio or HDRI environment (with transparent
   background), three-point lighting, and an auto-framed camera, then render multi-angle
   stills and a 360° turntable video — all from one **Render** tab, so you can present a
-  finished asset without leaving Blender.
+  finished asset without leaving Blender. Ratio resolution presets (1:1 / 16:9 / 9:16 /
+  4:5) write straight into Blender's native output, an **isolate** toggle keeps other
+  meshes out of the shot, and a camera view you refine is **saved per asset** and restored
+  in one click when you come back.
 
 ## Requirements
 
-- **Blender 4.5 LTS** or newer.
+- **Blender 4.5 LTS** or newer — verified through **5.2 LTS**.
 
 ## Installation
 

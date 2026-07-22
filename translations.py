@@ -458,14 +458,117 @@ _ko = {
     ("*", "A single .mp4 video (H.264) — easiest to share and upload"): "단일 .mp4 영상 (H.264) — 공유·업로드가 가장 쉬움",
     ("*", "One PNG per frame (_0001, _0002…) — for compositing or a transparent background"): "프레임마다 PNG 한 장 (_0001, _0002…) — 합성·투명 배경용",
     ("*", "Turntable output — a single video file or a numbered PNG sequence"): "턴테이블 출력 — 영상 파일 하나 또는 번호 붙은 PNG 시퀀스",
-    ("*", "Frames for one full 360° turn — more is smoother but slower to render (60 @ 24fps ≈ 2.5 s loop)"): "한 바퀴(360°) 프레임 수 — 많을수록 부드럽지만 렌더는 느려짐 (60 @ 24fps ≈ 2.5초 루프)",
+    ("*", "Frames for one full 360° turn — derived from Seconds per Turn × FPS (144 @ 24fps = 6 s loop)"): "한 바퀴(360°) 프레임 수 — '한 바퀴 시간 × FPS'로 자동 계산 (144 @ 24fps = 6초 루프)",
     ("*", "Playback frame rate of the turntable video"): "턴테이블 영상의 재생 프레임레이트",
+
+    # ── v1.1 UX 재구성 — Publish 탭·턴테이블 속도 (무료 파일 문자열) ──
+    ("*", "Publish"): "퍼블리시",
+    ("*", "Batch render and deliver finished assets"): "마무리한 에셋을 배치 렌더하고 내보낼 준비",
+    ("*", "Turntable"): "턴테이블",
+    ("*", "Seconds per Turn"): "한 바퀴 시간(초)",
+    ("*", "How long one full 360° turn takes — slower shows the asset off better. Frames are derived automatically (seconds × FPS)"): "360° 한 바퀴가 도는 시간 — 느릴수록 에셋이 잘 보입니다. 프레임 수는 자동 계산(초 × FPS)",
+    ("*", "= {n} frames @ {fps} fps"): "= {n} 프레임 @ {fps} fps",
+
+    # ── 세션27 — 턴테이블 한계 해제 + 부담 경고 ──
+    ("*", "How long one full 360° turn takes — slower shows the asset off better. Frames are derived automatically (seconds × FPS), and every frame is one render"): "360° 한 바퀴가 도는 시간 — 느릴수록 에셋이 잘 보입니다. 프레임 수는 자동 계산(초 × FPS)되고, 프레임 한 장 = 렌더 한 번입니다",
+    ("*", "Playback frame rate of the turntable video — higher is smoother but renders more frames for the same seconds"): "턴테이블 영상의 재생 프레임레이트 — 높을수록 부드럽지만 같은 시간에 렌더할 프레임이 늘어납니다",
+    ("*", "Heavy: {n} frames to render"): "무거움: 렌더할 프레임 {n}장",
+    ("*", "Lower seconds or FPS, or use EEVEE"): "시간(초)이나 FPS를 낮추거나, EEVEE를 쓰세요",
+
+    # ── 세션27 — 격리 렌더 (사이클 ④) ──
+    ("*", "Isolate Asset in Renders"): "렌더 시 에셋 격리",
+    ("*", "While rendering an asset, hide every other mesh so nothing else appears in the shot — visibility is restored afterwards"): "에셋을 렌더하는 동안 다른 메쉬를 모두 숨겨 컷에 다른 오브젝트가 찍히지 않게 합니다 — 렌더가 끝나면 원상 복구",
+
+    # ── 세션27 — 탭 순서 커스텀 ──
+    ("*", "Tab Order"): "탭 순서",
+    ("*", "Panel tab order — reorder with the arrows below"): "패널 탭 순서 — 아래 화살표로 순서를 바꿉니다",
+    ("*", "Panel Tab Order"): "패널 탭 순서",
+    ("*", "Move Tab"): "탭 이동",
+    ("*", "Reorder the panel tabs — the tab bar follows this order"): "패널 탭 순서 바꾸기 — 탭 바가 이 순서를 따릅니다",
+
+    # ── 세션27 — 잔여 감사 V10 (환경 clobber 보존·고지) ──
+    ("*", "Previous world kept: {name}"): "이전 월드 보존됨: {name}",
+    ("*", "Will replace world '{name}' — the old one stays in the file"): "월드 '{name}'를 교체합니다 — 기존 월드는 파일에 남습니다",
+
+    # ── v1.1 P1/P2 — 턴테이블 카메라 상태 줄·파일명 기준 표시 (무료 파일 문자열) ──
+    ("*", "Camera: auto-place at {angle}"): "카메라: {angle}로 자동 배치",
+    ("*", "Camera: will re-place at {angle}"): "카메라: {angle}로 자동 재배치",
+    ("*", "Camera: keeping your placement"): "카메라: 직접 잡은 배치 유지",
+    ("*", "File name base: {base}"): "파일명 기준: {base}",
+    ("*", "Asset Name overrides — selected mesh is '{m}'"): "에셋 이름이 우선 적용 중 — 선택 메쉬는 '{m}'",
+
+    # ── v1.1.x — 가이드 모드 (마무리 여정 스트립, 사이클 ⑥) ──
+    ("*", "Finishing Guide"): "마무리 가이드",
+    ("*", "Show the five-step finishing journey above the tabs"): "탭 위에 5단계 마무리 여정을 표시",
+    ("*", "Next: {step}"): "다음: {step}",
+    ("*", "All five steps look done"): "다섯 단계 모두 완료",
+    ("*", "Next Step"): "다음 할 일",
+    ("*", "Jump to the tab of the next unfinished step in the finishing journey"): "마무리 여정에서 아직 안 끝난 단계의 탭으로 이동",
+    # 판정 상세 (현재 단계 한 줄)
+    ("*", "No PBR material — pick a texture folder with One Click"): "PBR 재질 없음 — 원클릭으로 텍스처 폴더를 선택하세요",
+    ("*", "No asset name — set one or add a slot folder"): "에셋 이름 없음 — 이름을 넣거나 슬롯 폴더를 지정하세요",
+    ("*", "Run Apply Naming in the Batch tab"): "배치 탭에서 이름 정리를 실행하세요",
+    ("*", "No scene camera — set up in the Render tab"): "씬 카메라 없음 — 렌더 탭에서 셋업하세요",
+    ("*", "Camera is aimed at another asset — re-place it"): "카메라가 다른 에셋을 보고 있음 — 재배치하세요",
+    # 턴테이블 clobber 가드 (P2)
+    ("*", "Camera has animation"): "카메라에 애니메이션이 있음",
+    ("*", "The turntable orbit will drive the camera over your keyframes during this render"): "이 렌더 동안 턴테이블 궤도가 키프레임 위로 카메라를 움직입니다",
+    ("*", "Camera has animation — the orbit drives it during this render"): "카메라에 애니메이션이 있음 — 이 렌더 동안엔 궤도가 카메라를 움직입니다",
+    ("*", "Keyframes on KK_Camera will override the angle placement — the 4 angles will not differ"): "KK_Camera의 키프레임이 앵글 배치를 덮어씁니다 — 4장이 서로 다르지 않게 됩니다",
+    # 에셋별 뷰 기억 (B안, 세션28)
+    ("*", "Bring back the view refined for this asset (position, rotation, lens). The restored camera counts as hand-placed — nothing re-places it silently"): "이 에셋에서 다듬어 둔 구도(위치·회전·렌즈)를 복원합니다. 복원된 카메라는 직접 잡은 것으로 취급돼 아무것도 조용히 재배치하지 않습니다",
+    ("*", "No saved view on this asset"): "이 에셋에 저장된 구도가 없습니다",
+    ("*", "Saved view restored"): "저장된 구도 복원됨",
+    ("*", "Make KK_Camera yours: rename it and remove the add-on stamps so nothing manages it anymore. The next placement creates a fresh KK_Camera"): "KK_Camera를 내 카메라로: 이름을 바꾸고 애드온 스탬프를 지워 더 이상 관리하지 않게 합니다. 다음 배치는 새 KK_Camera를 만듭니다",
+    ("*", "No KK_Camera to detach"): "분리할 KK_Camera가 없습니다",
+    ("*", "Camera detached: {name}"): "카메라 분리됨: {name}",
+    ("*", "Saved view for this asset"): "이 에셋의 저장된 구도 있음",
+    ("*", "No render saved yet for this name"): "이 이름으로 저장된 렌더가 아직 없음",
+    # guide_next 이동 후 상태바 힌트
+    ("*", "Pick a texture folder — One Click builds the material"): "텍스처 폴더를 선택하면 원클릭이 재질을 만듭니다",
+    ("*", "Finish the UV — use the existing map or create one"): "UV를 마무리하세요 — 기존 UV 사용 또는 새로 생성",
+    ("*", "Set the asset name and run Apply Naming"): "에셋 이름을 정하고 이름 정리를 실행하세요",
+    ("*", "Set up the environment, lights, and camera"): "환경·조명·카메라를 셋업하세요",
+    ("*", "Render & Save writes the file into the output folder"): "렌더 & 저장이 출력 폴더에 파일을 기록합니다",
+    # 스트립 단계 라벨 — 짧은 흔한 단어라 코어 사전에 뺏기지 않게 "Kilnkit" 컨텍스트로 조회
+    ("Kilnkit", "Material"): "재질",
+    ("Kilnkit", "UV"): "UV",
+    ("Kilnkit", "Name"): "이름",
+    ("Kilnkit", "Shot"): "촬영",
+    ("Kilnkit", "Output"): "출력",
+
+    # ── v1.1.x — 가이드 리뷰 반영 (결과 미리보기·영수증·다음 에셋·네이밍 스타일) ──
+    ("*", "Select the next mesh to finish"): "마무리할 다음 메쉬를 선택하세요",
+    ("*", "Clear the asset name and selection so the journey starts fresh for the next mesh"): "에셋 이름과 선택을 비워 다음 메쉬의 여정을 새로 시작",
+    ("*", "Naming Style"): "네이밍 스타일",
+    ("*", "How type prefixes are applied when renaming"): "이름 정리 시 타입 접두사를 붙이는 방식",
+    ("*", "Family Name"): "가족 동일명",
+    ("*", "One family name for object, mesh, and materials — Blender Studio style"): "오브젝트·메쉬·재질에 한 가족 이름 — Blender Studio 방식",
+    ("*", "Game Engine (SM_/M_)"): "게임 엔진 (SM_/M_)",
+    ("*", "Type prefixes for game engines — SM_ for the object and mesh, M_ for materials"): "게임 엔진용 타입 접두사 — 오브젝트·메쉬는 SM_, 재질은 M_",
+    ("*", "Custom Prefixes"): "커스텀 접두사",
+    ("*", "Your own type prefixes — set them below"): "타입 접두사를 직접 지정 — 아래 칸에 입력",
+    ("*", "Mesh Prefix"): "메쉬 접두사",
+    ("*", "Type prefix for the object and mesh — a separator _ is added when missing"): "오브젝트·메쉬 타입 접두사 — 구분자 _가 없으면 자동으로 붙음",
+    ("*", "Material Prefix"): "재질 접두사",
+    ("*", "Type prefix for materials — a separator _ is added when missing"): "재질 타입 접두사 — 구분자 _가 없으면 자동으로 붙음",
+    ("*", "Style"): "스타일",
+
+    # ── v1.1.x — 해상도 비율 프리셋 + 네이티브 동기화 (P1) ──
+    ("*", "Write this resolution straight into the native scene output — the add-on and F12 always match"): "이 해상도를 블렌더 기본 출력에 바로 기록 — 애드온과 F12가 항상 일치",
+    ("*", "Resolution set: {x}×{y}"): "해상도 설정됨: {x}×{y}",
+    ("*", "Apply engine and samples with light defaults (low viewport samples) + GPU for Cycles when available. Resolution is set above — natively"): "엔진·샘플을 가벼운 기본값으로 적용(뷰포트 저샘플) + Cycles는 가능 시 GPU. 해상도는 위 칸에서 — 네이티브 직결",
+    ("*", "Render settings applied — {eng}, {s} samples{extra}"): "렌더 설정 적용됨 — {eng}, {s} 샘플{extra}",
 }
 
 # Operator bl_label strings — Blender may look these up with either the
 # default ("*") or the "Operator" i18n context depending on where they are
 # drawn, so register each label under both contexts.
 _op_labels = {
+    "Restore Camera View": "구도 복원",
+    "Detach Camera": "카메라 분리",
+    "Set Resolution": "해상도 설정",
+    "Start Next Asset": "다음 에셋 시작",
     "Add Slot": "슬롯 추가",
     "Import Subfolders": "하위 폴더 일괄 불러오기",
     "Remove Slot": "슬롯 삭제",
@@ -533,6 +636,7 @@ _BUTTON_TEXTS = (
     "Export to Library (.blend)",
     "Place Camera at This Angle",
     "4 Multi-Angles (Front · 3/4 · Side · Top)",
+    "Next Step",
 )
 for _en in _BUTTON_TEXTS:
     _ko[("Operator", _en)] = _ko[("*", _en)]
@@ -550,6 +654,7 @@ _SECTION_HEADERS = (
     "Lighting",
     "Camera",
     "Render Settings & Output",
+    "Turntable",     # core owns this word (orbit method) → Kilnkit context is mandatory
 )
 for _en in _SECTION_HEADERS:
     _ko[("Kilnkit", _en)] = _ko[("*", _en)]

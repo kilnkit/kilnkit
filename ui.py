@@ -17,8 +17,11 @@ from .operators import (
     fn_slot_folder_synced, fn_first_slot_dir, fn_find_sidecar,
     fn_naming_base, fn_naming_material_name, fn_slot_folder_name,
     fn_ffmpeg_known_missing, fn_uv_status, fn_mesh_has_uv,
+    fn_camera_untouched, fn_naming_base_status,
+    fn_guide_steps, fn_guide_current, fn_guide_output_name,
+    fn_render_basename, fn_render_outdir_display, fn_camera_view_saved,
 )
-from .props import UV_UNWRAP_METHODS, UV_OBJECT_COORD_METHODS
+from .props import UV_UNWRAP_METHODS, UV_OBJECT_COORD_METHODS, TURNTABLE_HEAVY_FRAMES, KK_WORLD_NAME, fn_tab_order
 
 # Static text= strings are auto-translated by Blender at draw time, but dynamic
 # compositions (f-strings etc.) never match the catalog → translate the template
@@ -136,7 +139,12 @@ class KILNKIT_UL_LibList(bpy.types.UIList):
 # Helpers
 # ================================================================
 
-# Tab id → (icon, display name). Five text tabs get clipped in a narrow N panel,
+# True when the paid module is present — gates the PUBLISH tab (queue + sheet).
+# The enum item itself exists in both editions (props.py ships identically in lite);
+# hiding happens here, at draw time, and the dispatch falls back for lite.
+_PAID = render_queue is not None and EDITION != 'lite'
+
+# Tab id → (icon, display name). Six text tabs get clipped in a narrow N panel,
 # so: icon tabs + one line below with the current tab name (no icon-only guessing).
 _TAB_META = {
     'MAIN':     ('MATERIAL',      "Main"),
@@ -144,18 +152,118 @@ _TAB_META = {
     'BATCH':    ('MOD_ARRAY',     "Batch"),
     'LIBRARY':  ('ASSET_MANAGER', "Library"),
     'RENDER':   ('RENDER_STILL',  "Render"),
+    'PUBLISH':  ('EXPORT',        "Publish"),   # paid — drawn only when _PAID
 }
 
 
-def _draw_tab_bar(layout, sp):
+def _draw_tab_bar(layout, sp, shown_tab):
     row = layout.row(align=True)
     row.scale_y = 1.2   # full-width tab bar slightly lower (1.5→1.2); icon glyphs are fixed-size → only button height changes
-    for tab_id, (icon, _name) in _TAB_META.items():
-        row.prop_enum(sp, "active_tab", tab_id, text="", icon=icon)
-    cur = _TAB_META.get(sp.active_tab)
+    try:
+        _order = fn_tab_order()   # prefs CSV, sanitized — user-reorderable in Preferences
+    except Exception:
+        _order = list(_TAB_META)
+    for tab_id in _order:
+        meta = _TAB_META.get(tab_id)
+        if meta is None or (tab_id == 'PUBLISH' and not _PAID):
+            continue
+        row.prop_enum(sp, "active_tab", tab_id, text="", icon=meta[0])
+    cur = _TAB_META.get(shown_tab)
     if cur:
         layout.label(text="▍ " + iface_(cur[1]), icon=cur[0])
     layout.separator()
+
+
+# Journey-strip step icons per state; the current step overrides with PLAY.
+_GUIDE_STATE_ICON = {'DONE': 'CHECKMARK', 'WARN': 'ERROR', 'TODO': 'RADIOBUT_OFF'}
+
+# Resolution ratio presets — stateless buttons that write the NATIVE scene resolution
+# (kilnkit.set_resolution). One button per ratio at ~2K quality (2026-07-16 user review:
+# ratio choice matters, size variants don't — the X/Y fields above show the result and
+# stay editable). 1:1 stores · 16:9 hero/video · 9:16 vertical · 4:5 market thumbnails
+# (matches the sheet's 1600×2000 preset). Labels are ratio tokens — untranslated.
+_RES_PRESET_BUTTONS = (
+    ("1:1", 2048, 2048), ("16:9", 1920, 1080),
+    ("9:16", 1080, 1920), ("4:5", 1600, 2000),
+)
+
+
+def _short_dir(path):
+    """Last path component with an ellipsis — full paths clip in a narrow panel."""
+    tail = os.path.basename(path.rstrip("\\/"))
+    return ("…" + os.sep + tail) if tail else path
+
+
+def _draw_guide_strip(layout, context, sp):
+    """The finishing-journey strip above the tab bar — five steps judged from the
+    actual scene state (fn_guide_steps), one next-step button, visible on every tab.
+    draw() stays read-only: judging never writes, the fold toggle is a Scene prop.
+    Step labels are short/common words, so they are looked up in the add-on context
+    (_I18N_CTX) to keep our wording over the core catalog's."""
+    steps = fn_guide_steps(context)
+    cur = fn_guide_current(steps)
+    done = sum(1 for s in steps if s['state'] == 'DONE')
+
+    box = layout.box()
+    head = box.row(align=True)
+    head.prop(sp, "guide_show", text="", emboss=False,
+              icon='TRIA_DOWN' if sp.guide_show else 'TRIA_RIGHT')
+    head.label(text=iface_("Finishing Guide") + f"  {done}/5")
+    if not sp.guide_show:
+        return
+
+    # Icon + step number only — five full labels clip in a narrow N panel (the same
+    # reason the tab bar is icon-only). The current step is named by the button below.
+    row = box.row(align=True)
+    for i, s in enumerate(steps):
+        icon = ('ERROR' if s['state'] == 'WARN'
+                else 'PLAY' if i == cur
+                else _GUIDE_STATE_ICON[s['state']])
+        row.label(text=str(i + 1), icon=icon)
+
+    r = context.scene.render
+    rx = int(r.resolution_x * r.resolution_percentage / 100)
+    ry = int(r.resolution_y * r.resolution_percentage / 100)
+
+    if cur is None:
+        # Receipt — what actually shipped (the file found on disk) + a fresh start
+        # for the next mesh. Journey state is per-asset; clearing the sticky asset
+        # name is what lets the next mesh start at step 1.
+        rec = box.box()
+        out_name = fn_guide_output_name(context)
+        rec.label(text=f"{out_name} · {rx}×{ry}" if out_name
+                  else iface_("All five steps look done"), icon='CHECKMARK')
+        rec.label(text="→ " + _short_dir(fn_render_outdir_display(context)), icon='BLANK1')
+        nb = box.row()
+        nb.alignment = 'RIGHT'
+        nb.operator("kilnkit.guide_next_asset", icon='FORWARD')
+        return
+
+    # Outcome preview — what will ship if the journey continues as set right now.
+    # Read-only native truths only: base name, effective resolution, output folder.
+    obj = context.active_object
+    if obj and obj.type == 'MESH':
+        res = box.box()
+        base, _mesh_name, overriding = fn_naming_base_status(context)
+        res.label(text=iface_("Name", _I18N_CTX) + f"  {base}", icon='SORTALPHA')
+        if overriding:
+            warn = res.row()
+            warn.alert = True
+            warn.label(text=iface_("Asset Name overrides — selected mesh is '{m}'")
+                       .format(m=_mesh_name), icon='ERROR')
+        res.label(text=iface_("Output", _I18N_CTX) + f"  {rx}×{ry} PNG", icon='OUTPUT')
+        res.label(text="→ " + _short_dir(fn_render_outdir_display(context)), icon='BLANK1')
+
+    s = steps[cur]
+    detail = _UV_STATUS[s['uv_status']][0] if s.get('uv_status') else s['detail']
+    line = box.row()
+    line.alert = s['state'] == 'WARN'
+    line.label(text=iface_(detail), icon='DOT')
+    nb = box.row()
+    nb.alignment = 'RIGHT'
+    nb.operator("kilnkit.guide_next",
+                text=iface_("Next: {step}").format(step=iface_(s['label'], _I18N_CTX)),
+                icon='FORWARD')
 
 
 def _section(layout, sp, label, prop_name):
@@ -248,27 +356,40 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         sp  = context.scene.kilnkit_scene_props
         obj = context.active_object
 
-        _draw_tab_bar(l, sp)
+        # Lite opening a .blend saved on full may carry active_tab='PUBLISH'.
+        # draw() must never WRITE sp.active_tab (writing to IDs is forbidden in
+        # draw — the session-19 FFmpeg-probe trap), so coerce read-only.
+        shown_tab = sp.active_tab if (_PAID or sp.active_tab != 'PUBLISH') else 'MAIN'
+
+        _draw_guide_strip(l, context, sp)
+        _draw_tab_bar(l, sp, shown_tab)
 
         # ── Main tab ─────────────────────────────────────────
-        if sp.active_tab == 'MAIN':
+        if shown_tab == 'MAIN':
             self._draw_main(context, l, sp, obj)
 
         # ── Settings tab ─────────────────────────────────────
-        elif sp.active_tab == 'SETTINGS':
+        elif shown_tab == 'SETTINGS':
             self._draw_settings(context, l, sp, obj)
 
         # ── Batch tab ────────────────────────────────────────
-        elif sp.active_tab == 'BATCH':
+        elif shown_tab == 'BATCH':
             self._draw_batch(context, l, sp, obj)
 
         # ── Library tab ──────────────────────────────────────
-        elif sp.active_tab == 'LIBRARY':
+        elif shown_tab == 'LIBRARY':
             self._draw_library(context, l, sp)
 
         # ── Render tab ───────────────────────────────────────
-        elif sp.active_tab == 'RENDER':
+        elif shown_tab == 'RENDER':
             self._draw_render(context, l, sp)
+
+        # ── Publish tab (paid: render queue + contact sheet) ─
+        #    The lite build omits the module and never draws this tab: Blender's
+        #    Extensions policy forbids advertising the paid version inside the
+        #    add-on UI, so the upsell lives on the store/listing page, never here.
+        elif shown_tab == 'PUBLISH':
+            render_queue.draw_tab(context, l)
 
     # ── Main ─────────────────────────────────────────────────
 
@@ -624,6 +745,13 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         if sp.naming_use_prefix:
             row_pfx.prop(sp, "naming_prefix", text="")
 
+        # Engine-style type prefixes (SM_/M_) — the preview below follows live.
+        naming.prop(sp, "naming_style", text="Style")
+        if sp.naming_style == 'CUSTOM':
+            row_ts = naming.row(align=True)
+            row_ts.prop(sp, "naming_custom_mesh", text="")
+            row_ts.prop(sp, "naming_custom_mat", text="")
+
         # Rename-materials toggle
         naming.prop(sp, "naming_rename_mats")
 
@@ -761,6 +889,11 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             elif sp.render_light_preset == 'FLAT':
                 b1.prop(sp, "world_color")
             b1.prop(sp, "world_strength", slider=True)
+            _w = context.scene.world
+            if _w and _w.name != KK_WORLD_NAME:
+                # V10 — applying replaces the current world; the old one stays in the file
+                b1.label(text=iface_("Will replace world '{name}' — the old one stays in the file")
+                         .format(name=_w.name), icon='INFO')
             b1.operator("kilnkit.setup_environment", text="Apply Environment", icon='WORLD')
             b1.separator()
             # Transparent background — expose the built-in property directly (one source of truth, no extra state)
@@ -783,10 +916,24 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             row = b3.row(align=True)
             row.prop(sp, "camera_lens")
             row.prop(sp, "camera_margin")
-            r2 = b3.row()
+            # View memory (B, session 28): when this asset carries a refined view, the
+            # primary button becomes "restore" (same grammar as the UV apply button);
+            # the refresh icon forces a fresh autoframe. The unlink icon hands the
+            # camera over to the user (rename + stamps removed).
+            _act = context.active_object
+            _saved = fn_camera_view_saved(_act if (_act and _act.type == 'MESH') else None)
+            if _saved is not None:
+                b3.label(text="Saved view for this asset", icon='BOOKMARKS')
+            r2 = b3.row(align=True)
             r2.scale_y = 1.2
             r2.enabled = bool(sel)
-            r2.operator("kilnkit.setup_camera", text="Place Camera at This Angle", icon='CAMERA_DATA')
+            if _saved is not None:
+                r2.operator("kilnkit.restore_camera_view", text="Restore Camera View", icon='LOOP_BACK')
+                r2.operator("kilnkit.setup_camera", text="", icon='FILE_REFRESH')
+            else:
+                r2.operator("kilnkit.setup_camera", text="Place Camera at This Angle", icon='CAMERA_DATA')
+            if bpy.data.objects.get("KK_Camera"):
+                r2.operator("kilnkit.detach_camera", text="", icon='UNLINKED')
             if not sel:
                 b3.label(text="Select a mesh to enable", icon='INFO')
             elif bpy.data.objects.get("KK_Camera"):
@@ -798,20 +945,39 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         b4 = _section(l, sp, "Render Settings & Output", "show_render_output")
         if sp.show_render_output:
             b4.prop(sp, "render_engine_choice", expand=True)
-            row = b4.row(align=True)
-            row.prop(sp, "render_res", text="")
-            row.prop(sp, "render_samples")
+            b4.prop(sp, "render_samples")
+            # Resolution = the native truth, embedded directly (the Output-path B
+            # philosophy): the fields ARE scene.render, the ratio presets write into
+            # them — Kilnkit and F12 can never disagree. Guide strip reads the same.
+            res_row = b4.row(align=True)
+            res_row.prop(context.scene.render, "resolution_x", text="X")
+            res_row.prop(context.scene.render, "resolution_y", text="Y")
+            b4.prop(context.scene.render, "resolution_percentage", text="%")
+            btn_row = b4.row(align=True)
+            for _lbl, _rx, _ry in _RES_PRESET_BUTTONS:
+                _op = btn_row.operator("kilnkit.set_resolution", text=_lbl)
+                _op.rx, _op.ry = _rx, _ry
             b4.operator("kilnkit.apply_render_settings", text="Apply Render Settings", icon='PREFERENCES')
             b4.separator()
             # Native Blender output field, embedded directly (no separate "Save To") so Kilnkit
             # and F12 write to the same place. Kilnkit uses only the folder + its own file name.
             b4.prop(context.scene.render, "filepath", text="Output")
             b4.label(text="Folder only — file name = asset name_angle", icon='INFO')
+            # The effective file-name base — a stale Asset Name silently stamps every
+            # render/sheet with the old name (the mixed-sheet trap), so show it.
+            _nb, _nm, _nover = fn_naming_base_status(context)
+            b4.label(text=iface_("File name base: {base}").format(base=_nb), icon='INFO')
+            if _nover:
+                _r = b4.row()
+                _r.alert = True
+                _r.label(text=iface_("Asset Name overrides — selected mesh is '{m}'").format(m=_nm),
+                         icon='ERROR')
             # Unsaved + unresolvable (//) or default (/tmp) path → renders fall back to Home.
             _fp = context.scene.render.filepath or "//"
             if not bpy.data.filepath and (_fp.startswith("//") or _fp.replace("\\", "/").rstrip("/") == "/tmp"):
                 b4.label(text="Not saved — using Home/Kilnkit_Renders", icon='INFO')
             b4.prop(sp, "render_exist_mode")
+            b4.prop(sp, "render_isolate")
             r = b4.row()
             r.scale_y = 1.4
             r.enabled = bool(context.scene.camera)
@@ -825,32 +991,43 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             r3.enabled = bool(selm)
             r3.operator("kilnkit.render_multi_angle", text="4 Multi-Angles (Front · 3/4 · Side · Top)", icon='CAMERA_DATA')
 
-            # Turntable — 360° camera orbit animation (places its own camera; needs selected meshes)
-            b4.separator()
-            b4.label(text="Turntable — a 360° spin video", icon='FILE_MOVIE')
-            trow = b4.row(align=True)
-            trow.prop(sp, "turntable_frames")
+        # 5) Turntable — 360° camera orbit animation (places its own camera; needs
+        #    selected meshes). Speed is a "seconds per turn" proxy; frames derive.
+        b5 = _section(l, sp, "Turntable", "show_render_turntable")
+        if sp.show_render_turntable:
+            selm = [o for o in context.selected_objects if o.type == 'MESH']
+            # Which camera will the orbit use? Make the freshness decision visible
+            # BEFORE the click (multi-angle leaves a stale TOP camera behind).
+            _cam = context.scene.camera
+            _angle = iface_(sp.bl_rna.properties['camera_view'].enum_items[sp.camera_view].name)
+            if not _cam or _cam.type != 'CAMERA':
+                b5.label(text=iface_("Camera: auto-place at {angle}").format(angle=_angle), icon='INFO')
+            elif _cam.name == "KK_Camera" and fn_camera_untouched(_cam):
+                b5.label(text=iface_("Camera: will re-place at {angle}").format(angle=_angle), icon='INFO')
+            else:
+                b5.label(text=iface_("Camera: keeping your placement"), icon='INFO')
+            trow = b5.row(align=True)
+            trow.prop(sp, "turntable_seconds", slider=True)
             trow.prop(sp, "turntable_fps")
-            b4.prop(sp, "turntable_format", text="")
+            b5.prop(sp, "turntable_format", text="")
+            b5.label(text=iface_("= {n} frames @ {fps} fps").format(n=sp.turntable_frames, fps=sp.turntable_fps))
+            if sp.turntable_frames > TURNTABLE_HEAVY_FRAMES:
+                # Every frame is one render — long turns are a time budget decision,
+                # so warn with the real number instead of clamping the artist.
+                b5.label(text=iface_("Heavy: {n} frames to render").format(n=sp.turntable_frames),
+                         icon='ERROR')
+                b5.label(text=iface_("Lower seconds or FPS, or use EEVEE"))
             # Read-only: probing writes to the scene, which draw() is not allowed to do.
             if sp.turntable_format == 'MP4' and fn_ffmpeg_known_missing():
-                b4.label(text="No FFmpeg in this Blender — saves as PNG sequence", icon='INFO')
+                b5.label(text="No FFmpeg in this Blender — saves as PNG sequence", icon='INFO')
             elif sp.turntable_format == 'MP4' and context.scene.render.film_transparent:
                 # Video has no alpha channel → transparent areas render black.
-                b4.label(text="Transparent bg → MP4 shows black", icon='INFO')
-                b4.label(text="(PNG sequence keeps the alpha)")
-            r4 = b4.row()
+                b5.label(text="Transparent bg → MP4 shows black", icon='INFO')
+                b5.label(text="(PNG sequence keeps the alpha)")
+            r4 = b5.row()
             r4.scale_y = 1.2
             r4.enabled = bool(selm)
             r4.operator("kilnkit.render_turntable", text="Render Turntable", icon='FILE_MOVIE')
-
-        # 5) Render queue (batch, paid module) — draws its own collapsible box.
-        #    The lite build omits the module and shows nothing here: Blender's
-        #    Extensions policy forbids advertising the paid version inside the
-        #    add-on UI, so the upsell lives on the store/listing page (a
-        #    description link), never in the panel.
-        if render_queue is not None and EDITION != 'lite':
-            render_queue.draw_queue(context, l)
 
 
 # ================================================================

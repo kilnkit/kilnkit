@@ -14,6 +14,7 @@ from .props import (
     UV_UNWRAP_METHODS, UV_OBJECT_COORD_METHODS,
     KK_WORLD_NAME, KK_WORLD_BG, KK_WORLD_ENV, KK_LIGHTS_COLL, KK_TURNTABLE_PIVOT,
     fn_get_rules, sync_active_slot_from_nodes,
+    fn_tab_order, fn_tab_order_moved,
 )
 
 # Unlike draw() strings, report/status-bar strings are not auto-translated →
@@ -527,8 +528,13 @@ def fn_build_nodes(mat, directory, uv_method='TRIPLANAR'):
     if not image_paths:
         return False
 
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
+    # 4.x creates materials WITHOUT a node tree (use_nodes off by default); 5.x always
+    # has one. Every caller funnels through here, so ensure the tree at the single
+    # entry point (the CLAUDE.md fn_ensure_nodes rule) — found by the 4.5 minimum-
+    # version harness run (2026-07-16): a fresh material crashed on mat.node_tree.nodes.
+    nt = fn_ensure_nodes(mat)
+    nodes = nt.nodes
+    links = nt.links
     nodes.clear()
 
     X = {'in': -1200, 'map': -1000, 'tex': -700, 'proc': -200, 'bsdf': 200, 'out': 550}
@@ -1963,19 +1969,37 @@ def fn_naming_prefix(sp):
     return prefix
 
 
+def fn_type_prefix(sp, kind):
+    """Engine-style type prefix per datablock kind ('MESH' / 'MAT') — '' in FAMILY style.
+    UE pins the de-facto convention (SM_ / M_); CUSTOM reads the user fields. A separator
+    _ is appended when missing (same rule as fn_naming_prefix). Order in the final name is
+    TYPE_ + set prefix + base (UE style: SM_Set_Chair)."""
+    style = getattr(sp, "naming_style", 'FAMILY')
+    if style == 'UE':
+        raw = "SM" if kind == 'MESH' else "M"
+    elif style == 'CUSTOM':
+        raw = (sp.naming_custom_mesh if kind == 'MESH' else sp.naming_custom_mat).strip()
+    else:
+        return ""
+    if raw and not raw.endswith(('_', '-', '.', ' ')):
+        raw += '_'
+    return raw
+
+
 def fn_naming_final(sp, base):
-    """Final object/mesh name = prefix + base."""
-    return f"{fn_naming_prefix(sp)}{base}"
+    """Final object/mesh name = type prefix + set prefix + base."""
+    return f"{fn_type_prefix(sp, 'MESH')}{fn_naming_prefix(sp)}{base}"
 
 
 def fn_naming_material_name(sp, base, slot_folder, multi):
     """Material name — Blender Studio style (the asset name is stamped into every datablock).
-    Single slot: <prefix><base>. Multi: <prefix><base>_<slot folder> (shortened when folder == base)."""
+    Single slot: <prefix><base>. Multi: <prefix><base>_<slot folder> (shortened when folder == base).
+    An engine naming style adds its material type prefix (M_) in front."""
     if multi and slot_folder and slot_folder != base:
         core = f"{base}_{slot_folder}"
     else:
         core = base
-    return f"{fn_naming_prefix(sp)}{core}"
+    return f"{fn_type_prefix(sp, 'MAT')}{fn_naming_prefix(sp)}{core}"
 
 
 def fn_naming_base(sp, obj):
@@ -2279,6 +2303,26 @@ class KILNKIT_OT_ResetSuffix(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class KILNKIT_OT_TabMove(bpy.types.Operator):
+    bl_idname = "kilnkit.tab_move"; bl_label = "Move Tab"; bl_options = {'INTERNAL'}
+    bl_description = "Reorder the panel tabs — the tab bar follows this order"
+
+    index: bpy.props.IntProperty(options={'HIDDEN'})
+    direction: bpy.props.EnumProperty(
+        items=[('UP', "Up", ""), ('DOWN', "Down", "")], options={'HIDDEN'})
+
+    def execute(self, context):
+        ad = context.preferences.addons.get(__package__)
+        if not ad:
+            return {'CANCELLED'}
+        p = ad.preferences
+        moved = fn_tab_order_moved(fn_tab_order(p), self.index, self.direction)
+        if moved is None:
+            return {'CANCELLED'}
+        p.tab_order = ",".join(moved)
+        return {'FINISHED'}
+
+
 class KILNKIT_OT_ResetSettings(bpy.types.Operator):
     bl_idname = "kilnkit.reset_settings"; bl_label = "Reset to Defaults"; bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Reset pipeline settings (UV, steps, Decimate, etc.) to their defaults"
@@ -2397,6 +2441,12 @@ class KILNKIT_OT_SetupEnvironment(bpy.types.Operator):
             msg = (rpt_("Flat color environment applied") if preset == 'FLAT'
                    else rpt_("Studio environment (neutral backdrop) applied — press 'Set Up 3-Point Lights' for the lights"))
 
+        prev = context.scene.world
+        if prev and prev is not w:
+            # V10 — replacing the user's world: make the old datablock purge-proof and
+            # say so (restorable from the World dropdown in the World properties).
+            prev.use_fake_user = True
+            self.report({'INFO'}, rpt_("Previous world kept: {name}").format(name=prev.name))
         context.scene.world = w
         self.report({'INFO'}, msg)
         return {'FINISHED'}
@@ -2532,6 +2582,27 @@ def fn_fit_camera(points, center, direction, cam_data, scene, margin):
     return mathutils.Vector(aim), dist
 
 
+def fn_camera_view_save(obj, cam):
+    """Store the camera's current pose + lens on the asset (one slot per mesh) —
+    view memory (session 28, plan B): position, rotation, lens only. DOF/exposure
+    stay out of scope on purpose (that is camera-management territory, not finishing)."""
+    obj["kk_cam_view"] = list(cam.location) + list(cam.rotation_euler) + [cam.data.lens]
+
+
+def fn_camera_view_saved(obj):
+    """The asset's saved view as (loc, rot, lens) — None when absent or malformed."""
+    v = obj.get("kk_cam_view") if obj is not None else None
+    if v is None:
+        return None
+    try:
+        vals = [float(x) for x in v]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 7:
+        return None
+    return vals[0:3], vals[3:6], vals[6]
+
+
 def fn_place_camera(context, targets, view, lens, margin):
     """Place and aim KK_Camera so the targets' silhouette fills the frame at the given view
        angle, and set it as the scene camera. Returns cam (None on failure). Shared by
@@ -2543,6 +2614,14 @@ def fn_place_camera(context, targets, view, lens, margin):
     center, size = bb
     radius = max(size.length / 2.0, 1e-4)   # diagonal radius — only for clipping and the near guard
     cam = bpy.data.objects.get("KK_Camera")
+    # View memory (B): a hand-refined pose is about to be replaced — back it up onto
+    # the asset(s) it framed, with zero user action. Untouched placements are skipped
+    # (the autoframe is deterministic, so re-placing reproduces them exactly).
+    if cam is not None and cam.type == 'CAMERA' and not fn_camera_untouched(cam):
+        for nm in list(cam.get("kk_targets", ())):
+            prev = bpy.data.objects.get(str(nm))
+            if prev is not None and prev.type == 'MESH':
+                fn_camera_view_save(prev, cam)
     if not cam or cam.type != 'CAMERA':
         cam = bpy.data.objects.new("KK_Camera", bpy.data.cameras.new("KK_Camera"))
         context.scene.collection.objects.link(cam)
@@ -2563,7 +2642,46 @@ def fn_place_camera(context, targets, view, lens, margin):
     cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
     cam.data.clip_end = max(cam.data.clip_end, dist + radius * 4.0)
     context.scene.camera = cam
+    # Placement stamp — lets the turntable tell "Kilnkit-placed and untouched"
+    # (stale leftover → re-place) apart from "user adjusted it" (respect as-is).
+    # Values are read BACK after assignment so the float32 rounding matches on
+    # later comparison. Stamping LOCAL location/rotation on purpose: parenting
+    # via matrix_parent_inverse (turntable) does not change the local values,
+    # so an orbit run alone never counts as a user edit — only real moves do.
+    cam["kk_view"] = view
+    cam["kk_loc"] = list(cam.location)
+    cam["kk_rot"] = list(cam.rotation_euler)
+    # Which asset this placement framed (P2 freshness, 2026-07-16) — the guide's shot
+    # step uses it to flag an untouched KK_Camera still aimed at a previous asset.
+    cam["kk_targets"] = sorted(o.name for o in targets)
     return cam
+
+
+def fn_camera_untouched(cam):
+    """True when this camera still sits exactly where fn_place_camera left it
+    (placement stamp present and local transform unchanged, tolerance 1e-5)."""
+    try:
+        loc = cam["kk_loc"]; rot = cam["kk_rot"]
+    except KeyError:
+        return False
+    if "kk_view" not in cam.keys() or len(loc) != 3 or len(rot) != 3:
+        return False
+    return (max(abs(a - b) for a, b in zip(cam.location, loc)) < 1e-5
+            and max(abs(a - b) for a, b in zip(cam.rotation_euler, rot)) < 1e-5)
+
+
+def fn_camera_has_anim(cam):
+    """True when the camera object carries transform keyframes (P2 clobber guard,
+    session-16 finding): the turntable parents the camera to an orbit pivot, and the
+    camera's own location/rotation F-curves keep driving the LOCAL transform every
+    frame — the orbit and the user's animation fight silently. Only transform
+    channels count; data animation (lens ramps etc.) composes fine with the orbit."""
+    if cam is None or cam.animation_data is None:
+        return False
+    for fc in fn_iter_fcurves(cam.animation_data.action):
+        if fc.data_path.startswith(("location", "rotation_euler", "rotation_quaternion")):
+            return True
+    return False
 
 
 def fn_camera_targets(context):
@@ -2592,6 +2710,51 @@ class KILNKIT_OT_SetupCamera(bpy.types.Operator):
             return {'CANCELLED'}
         self.report({'INFO'}, rpt_("Camera placed — {view}").format(
             view=rpt_(_CAM_VIEW_LABELS.get(sp.camera_view, sp.camera_view))))
+        return {'FINISHED'}
+
+
+class KILNKIT_OT_RestoreCameraView(bpy.types.Operator):
+    bl_idname = "kilnkit.restore_camera_view"; bl_label = "Restore Camera View"; bl_options = {'REGISTER', 'UNDO'}
+    bl_description = "Bring back the view refined for this asset (position, rotation, lens). The restored camera counts as hand-placed — nothing re-places it silently"
+
+    def execute(self, context):
+        obj = context.active_object
+        saved = fn_camera_view_saved(obj if (obj and obj.type == 'MESH') else None)
+        if saved is None:
+            self.report({'ERROR'}, rpt_("No saved view on this asset"))
+            return {'CANCELLED'}
+        loc, rot, lens = saved
+        cam = bpy.data.objects.get("KK_Camera")
+        if cam is None or cam.type != 'CAMERA':
+            cam = bpy.data.objects.new("KK_Camera", bpy.data.cameras.new("KK_Camera"))
+            context.scene.collection.objects.link(cam)
+        cam.location = loc
+        cam.rotation_euler = rot
+        cam.data.lens = lens
+        context.scene.camera = cam
+        # Deliberately NOT re-stamping: the restored pose must read as a hand-placed
+        # camera, so the turntable and the guide respect it instead of re-placing.
+        self.report({'INFO'}, rpt_("Saved view restored"))
+        return {'FINISHED'}
+
+
+class KILNKIT_OT_DetachCamera(bpy.types.Operator):
+    bl_idname = "kilnkit.detach_camera"; bl_label = "Detach Camera"; bl_options = {'REGISTER', 'UNDO'}
+    bl_description = "Make KK_Camera yours: rename it and remove the add-on stamps so nothing manages it anymore. The next placement creates a fresh KK_Camera"
+
+    def execute(self, context):
+        cam = bpy.data.objects.get("KK_Camera")
+        if cam is None or cam.type != 'CAMERA':
+            self.report({'ERROR'}, rpt_("No KK_Camera to detach"))
+            return {'CANCELLED'}
+        base = fn_render_basename(context)
+        new_name = f"{base}_Camera" if base and base != "render" else "Camera_detached"
+        cam.name = new_name
+        cam.data.name = new_name
+        for k in ("kk_view", "kk_loc", "kk_rot", "kk_targets"):
+            if k in cam.keys():
+                del cam[k]
+        self.report({'INFO'}, rpt_("Camera detached: {name}").format(name=cam.name))
         return {'FINISHED'}
 
 
@@ -2626,47 +2789,52 @@ def fn_light_targets(context):
         return [o for o in context.scene.objects if o.type == 'MESH']
 
 
+def fn_place_studio_lights(context, targets):
+    """Create/replace the KK 3-point rig framed on `targets` (bbox center + radius).
+    Shared by the operator and the render queue — the queue re-frames the rig per
+    entry the same way the camera is re-placed per job (V4)."""
+    scene = context.scene
+    coll = fn_clear_kk_lights()
+    if not coll:
+        coll = bpy.data.collections.new(KK_LIGHTS_COLL)
+        scene.collection.children.link(coll)
+    elif coll.name not in scene.collection.children:
+        try:
+            scene.collection.children.link(coll)
+        except Exception:
+            pass
+
+    bb = fn_selected_bbox(targets)
+    if bb:
+        center, size = bb
+        radius = max(size.length / 2.0, 1e-4)
+    else:   # nothing to frame — light the origin at a sane default scale
+        center, radius = mathutils.Vector((0.0, 0.0, 0.0)), 1.0
+
+    for nm, az, el, dist_f, size_f, power_f, col in _LIGHT_RIGS:
+        ld = bpy.data.lights.new(nm, type='AREA')
+        ld.shape = 'SQUARE'
+        ld.size = max(size_f * radius, 1e-3)
+        ld.energy = power_f * LIGHT_KEY_POWER * radius * radius
+        ld.color = col
+        ob = bpy.data.objects.new(nm, ld)
+        ob.location = center + fn_orbit_direction(az, el) * (dist_f * radius)
+        ob.rotation_euler = (center - ob.location).to_track_quat('-Z', 'Y').to_euler()
+        coll.objects.link(ob)
+    return coll
+
+
 class KILNKIT_OT_SetupStudioLights(bpy.types.Operator):
     bl_idname = "kilnkit.setup_studio_lights"; bl_label = "Set Up 3-Point Lights"; bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Install key/fill/rim area lights around the selected asset, into the 'KK_Render_Lights' collection. Run again to replace"
 
     def execute(self, context):
-        scene = context.scene
-        coll = fn_clear_kk_lights()
-        if not coll:
-            coll = bpy.data.collections.new(KK_LIGHTS_COLL)
-            scene.collection.children.link(coll)
-        elif coll.name not in scene.collection.children:
-            try:
-                scene.collection.children.link(coll)
-            except Exception:
-                pass
-
-        bb = fn_selected_bbox(fn_light_targets(context))
-        if bb:
-            center, size = bb
-            radius = max(size.length / 2.0, 1e-4)
-        else:   # nothing to frame — light the origin at a sane default scale
-            center, radius = mathutils.Vector((0.0, 0.0, 0.0)), 1.0
-
-        for nm, az, el, dist_f, size_f, power_f, col in _LIGHT_RIGS:
-            ld = bpy.data.lights.new(nm, type='AREA')
-            ld.shape = 'SQUARE'
-            ld.size = max(size_f * radius, 1e-3)
-            ld.energy = power_f * LIGHT_KEY_POWER * radius * radius
-            ld.color = col
-            ob = bpy.data.objects.new(nm, ld)
-            ob.location = center + fn_orbit_direction(az, el) * (dist_f * radius)
-            ob.rotation_euler = (center - ob.location).to_track_quat('-Z', 'Y').to_euler()
-            coll.objects.link(ob)
-
+        fn_place_studio_lights(context, fn_light_targets(context))
         self.report({'INFO'}, rpt_("Studio 3-point lights installed (Key / Fill / Rim)"))
         return {'FINISHED'}
 
 
 # ── Render settings / output / execution ──
-
-_RES_PRESETS = {'512': 512, '1024': 1024, '2048': 2048, '4096': 4096}
 
 
 def fn_set_engine(scene, choice):
@@ -2679,6 +2847,37 @@ def fn_set_engine(scene, choice):
         except Exception:
             continue
     return scene.render.engine
+
+
+# ── Isolation (render_isolate) — hide every non-target mesh during target renders ──
+# One flat module state: the prepare closures live in two files (multi-angle/turntable
+# here, the queue in render_queue.py) and all end paths funnel through fn_isolation_clear.
+# The scene-diff harness snapshots hide_render, so a missed restore fails the tests.
+_ISO_HIDDEN = []
+
+
+def fn_isolation_apply(context, targets):
+    """render_isolate ON → hide every mesh except `targets` from the render.
+    Re-entrant per queue entry: restores the previous entry's hiding first."""
+    fn_isolation_clear()
+    sp = context.scene.kilnkit_scene_props
+    if not getattr(sp, "render_isolate", False):
+        return
+    keep = {o.name for o in targets}
+    for o in context.scene.objects:
+        if o.type == 'MESH' and o.name not in keep and not o.hide_render:
+            o.hide_render = True
+            _ISO_HIDDEN.append(o.name)
+
+
+def fn_isolation_clear():
+    """Restore only what fn_isolation_apply hid (meshes the user hid stay hidden)."""
+    global _ISO_HIDDEN
+    for nm in _ISO_HIDDEN:
+        ob = bpy.data.objects.get(nm)
+        if ob is not None:
+            ob.hide_render = False
+    _ISO_HIDDEN = []
 
 
 def fn_capture_output_state(scene):
@@ -2710,10 +2909,12 @@ def fn_restore_output_state(scene, st):
 def _install_output_restore(scene, st):
     """Restore the output state once a non-blocking (INVOKE_DEFAULT) render finishes or
     cancels, then remove the handlers (one-shot, guarded to this scene). Render & Save's
-    async render would otherwise leave the native filepath overwritten with the take path."""
+    async render would otherwise leave the native filepath overwritten with the take path.
+    Also clears render_isolate hiding (no-op when nothing was hidden)."""
     def _on_done(scn, *args):
         if scn is not scene:
             return
+        fn_isolation_clear()
         fn_restore_output_state(scene, st)
         for hl in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
             try:
@@ -2724,26 +2925,50 @@ def _install_output_restore(scene, st):
     bpy.app.handlers.render_cancel.append(_on_done)
 
 
+def fn_render_outdir_display(context):
+    """Pure path math for the effective output folder — safe to call from draw()
+    (no disk I/O). fn_render_outdir adds the makedirs on top of this."""
+    fp = context.scene.render.filepath or "//"
+    saved = bool(bpy.data.filepath)
+    home = os.path.join(os.path.expanduser("~"), "Kilnkit_Renders")
+    is_default_tmp = fp.replace("\\", "/").rstrip("/") == "/tmp"
+    if not saved and (fp.startswith("//") or is_default_tmp):
+        return home
+    folder = fp if fp.endswith(("/", "\\")) else (os.path.dirname(fp) or "//")
+    return bpy.path.abspath(folder) or home          # // that still can't resolve → home
+
+
 def fn_render_outdir(context):
     """Output folder = the directory of the native scene.render.filepath (the field shown in
     the render tab). // is relative to the .blend. An unsaved file whose path can't resolve
     (// relative) or is still Blender's default (/tmp) falls back to Home\\Kilnkit_Renders so
     first renders aren't lost in /tmp; a user-set absolute path is always honored. Kilnkit
     generates the file name itself, so only the directory part is used. Ensures the folder exists."""
-    fp = context.scene.render.filepath or "//"
-    saved = bool(bpy.data.filepath)
-    home = os.path.join(os.path.expanduser("~"), "Kilnkit_Renders")
-    is_default_tmp = fp.replace("\\", "/").rstrip("/") == "/tmp"
-    if not saved and (fp.startswith("//") or is_default_tmp):
-        ad = home
-    else:
-        folder = fp if fp.endswith(("/", "\\")) else (os.path.dirname(fp) or "//")
-        ad = bpy.path.abspath(folder) or home        # // that still can't resolve → home
+    ad = fn_render_outdir_display(context)
     try:
         os.makedirs(ad, exist_ok=True)
     except Exception:
         pass
     return ad
+
+
+def fn_naming_base_status(context):
+    """(base, mesh_name, overriding) for the file-name-base UI hints. Pure reads.
+    overriding = the Asset Name field is set AND differs from the active/selected
+    mesh — the trap where a stale name keeps stamping every render and sheet."""
+    base = fn_render_basename(context)
+    mesh_name = None
+    act = context.active_object
+    if act is not None and act.type == 'MESH':
+        mesh_name = act.name
+    else:
+        for o in context.selected_objects:
+            if o.type == 'MESH':
+                mesh_name = o.name
+                break
+    sp = context.scene.kilnkit_scene_props
+    overriding = bool(sp.naming_base.strip()) and mesh_name is not None and base != mesh_name
+    return base, mesh_name, overriding
 
 
 def fn_render_basename(context):
@@ -2898,7 +3123,12 @@ def fn_setup_turntable(context, targets, frames, sp):
         return None
     center, _size = bb
     cam = context.scene.camera
-    if not cam or cam.type != 'CAMERA':
+    # Re-place when there is no camera OR when the scene camera is a Kilnkit
+    # placement nobody touched since (e.g. multi-angle's leftover TOP view —
+    # the silent top-down-orbit bug). A camera the user moved (fly mode etc.)
+    # or any non-KK camera is respected as-is.
+    if (not cam or cam.type != 'CAMERA'
+            or (cam.name == "KK_Camera" and fn_camera_untouched(cam))):
         cam = fn_place_camera(context, targets, sp.camera_view, sp.camera_lens, sp.camera_margin)
         if not cam:
             return None
@@ -2930,6 +3160,29 @@ def fn_setup_turntable(context, targets, frames, sp):
             for kp in fc.keyframe_points:
                 kp.interpolation = 'LINEAR'
     return piv
+
+
+def fn_teardown_turntable():
+    """Undo the turntable scaffolding after a run (any end path): reset the pivot
+    to 0° so children land back at their pre-orbit pose, free every child with
+    its world transform kept, and remove the pivot. Without this, the camera
+    stays parented to an animated pivot and every later still/F12 silently
+    depends on the timeline frame. No-op when there is no pivot."""
+    piv = bpy.data.objects.get(KK_TURNTABLE_PIVOT)
+    if piv is None:
+        return
+    try:
+        piv.animation_data_clear()
+        piv.rotation_euler = (0.0, 0.0, 0.0)
+        bpy.context.view_layer.update()
+        for child in list(piv.children):
+            m = child.matrix_world.copy()
+            child.parent = None
+            child.matrix_parent_inverse.identity()
+            child.matrix_world = m
+        bpy.data.objects.remove(piv, do_unlink=True)
+    except Exception:
+        pass
 
 
 def fn_turntable_render_path(outdir, base, fmt, mode):
@@ -2973,18 +3226,33 @@ def fn_finalize_turntable_video(resolved):
         return src
 
 
+class KILNKIT_OT_SetResolution(bpy.types.Operator):
+    """Stateless resolution preset — writes straight into the native scene output
+    (the Output-path B philosophy: no shadow state, the add-on and F12 always match).
+    Replaced the old render_res enum, which was square-only and applied indirectly
+    (2026-07-16, session-26 user feedback: ratio presets + native sync)."""
+    bl_idname = "kilnkit.set_resolution"; bl_label = "Set Resolution"; bl_options = {'REGISTER', 'UNDO'}
+    bl_description = "Write this resolution straight into the native scene output — the add-on and F12 always match"
+
+    rx: bpy.props.IntProperty(default=1024, min=4)
+    ry: bpy.props.IntProperty(default=1024, min=4)
+
+    def execute(self, context):
+        r = context.scene.render
+        r.resolution_x, r.resolution_y = self.rx, self.ry
+        r.resolution_percentage = 100
+        self.report({'INFO'}, rpt_("Resolution set: {x}×{y}").format(x=self.rx, y=self.ry))
+        return {'FINISHED'}
+
+
 class KILNKIT_OT_ApplyRenderSettings(bpy.types.Operator):
     bl_idname = "kilnkit.apply_render_settings"; bl_label = "Apply Render Settings"; bl_options = {'REGISTER', 'UNDO'}
-    bl_description = "Apply engine, resolution, and samples. Light defaults (low viewport samples) + GPU for Cycles when available"
+    bl_description = "Apply engine and samples with light defaults (low viewport samples) + GPU for Cycles when available. Resolution is set above — natively"
 
     def execute(self, context):
         sp = context.scene.kilnkit_scene_props
         scene = context.scene
         eng = fn_set_engine(scene, sp.render_engine_choice)
-        res = _RES_PRESETS.get(sp.render_res, 1024)
-        scene.render.resolution_x = res
-        scene.render.resolution_y = res
-        scene.render.resolution_percentage = 100
 
         msg_extra = ""
         if eng == 'CYCLES':
@@ -3009,8 +3277,8 @@ class KILNKIT_OT_ApplyRenderSettings(bpy.types.Operator):
             except Exception:
                 pass
 
-        self.report({'INFO'}, rpt_("Render settings applied — {eng}, {res}px, {s} samples{extra}").format(
-            eng=eng, res=res, s=sp.render_samples, extra=msg_extra))
+        self.report({'INFO'}, rpt_("Render settings applied — {eng}, {s} samples{extra}").format(
+            eng=eng, s=sp.render_samples, extra=msg_extra))
         return {'FINISHED'}
 
 
@@ -3034,20 +3302,30 @@ class KILNKIT_OT_RenderSave(bpy.types.Operator):
         fn_setup_png_output(scene)
         scene.render.filepath = target
         savename = os.path.basename(target)
+        # render_isolate — this single-shot path was missed in session 27 (multi-angle,
+        # turntable, and the queue had it), so a checked toggle still photobombed this
+        # button (2026-07-15 user report). No mesh target → whole-scene shot, no hiding
+        # (an empty keep-set would hide every mesh).
+        targets = fn_camera_targets(context)
+        if targets:
+            fn_isolation_apply(context, targets)        # no-op while the toggle is off
         try:
             if bpy.app.background:
                 bpy.ops.render.render(write_still=True)            # headless: synchronous
+                fn_isolation_clear()
                 fn_restore_output_state(scene, out_state)          # restore right after
                 self.report({'INFO'}, rpt_("Render saved: {name}.png → {dir}").format(name=savename, dir=outdir))
             else:
                 res = bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)  # GUI: render window + progress, non-blocking
                 if 'RUNNING_MODAL' in res:
-                    _install_output_restore(scene, out_state)      # restore when the async render finishes
+                    _install_output_restore(scene, out_state)      # restores output + clears isolation when done
                     self.report({'INFO'}, rpt_("Rendering — will save when done: {name}.png → {dir}").format(name=savename, dir=outdir))
                 else:
+                    fn_isolation_clear()
                     fn_restore_output_state(scene, out_state)      # finished synchronously / did not start
                     self.report({'INFO'}, rpt_("Render saved: {name}.png → {dir}").format(name=savename, dir=outdir))
         except Exception as e:
+            fn_isolation_clear()
             fn_restore_output_state(scene, out_state)              # restore on failure too
             self.report({'ERROR'}, rpt_("Render failed: {err}").format(err=e))
             return {'CANCELLED'}
@@ -3200,6 +3478,7 @@ class _KILNKIT_RenderSequence:
             except Exception:
                 pass
             _KILNKIT_RenderSequence._running = False
+            fn_isolation_clear()   # render_isolate — un-hide before any finalize work
             try:
                 self._on_sequence_done(self._sq_saved, self._sq_skipped, cancelled)
             except Exception:
@@ -3208,6 +3487,15 @@ class _KILNKIT_RenderSequence:
 
     def cancel(self, context):
         self._sq_finish(context, True)
+
+
+# Optional post-run hook for the multi-angle operator. An optional module may
+# attach a callable here at its register() (and reset it to None at unregister).
+# Called after a run that saved at least one angle, with
+# (scene, base, outdir, view_paths) where view_paths maps the lowercase view
+# name to its saved PNG path. May return a (report_level, message) tuple to
+# surface in the operator report, or None.
+fn_multiangle_done_hook = None
 
 
 class KILNKIT_OT_RenderMultiAngle(_KILNKIT_RenderSequence, bpy.types.Operator):
@@ -3228,6 +3516,18 @@ class KILNKIT_OT_RenderMultiAngle(_KILNKIT_RenderSequence, bpy.types.Operator):
             return {'WARNING'}, rpt_("Cancelled — saved {n}{skip} → {dir}").format(n=n, skip=skip_msg, dir=outdir)
         return {'INFO'}, rpt_("Multi-angle: saved {n}{skip} → {dir}").format(n=n, skip=skip_msg, dir=outdir)
 
+    def invoke(self, context, event):
+        # Animated-camera guard (same contract as the turntable's): transform keyframes
+        # on KK_Camera win over the per-angle placement at evaluation time (measured),
+        # so all four shots come out at the keyframed pose. Ask only when it applies.
+        kk = bpy.data.objects.get("KK_Camera")
+        if kk is not None and fn_camera_has_anim(kk):
+            return context.window_manager.invoke_confirm(
+                self, event,
+                title=iface_("Camera has animation"),
+                message=iface_("Keyframes on KK_Camera will override the angle placement — the 4 angles will not differ"))
+        return self.execute(context)
+
     def execute(self, context):
         targets = fn_camera_targets(context)
         if not targets:
@@ -3237,6 +3537,9 @@ class KILNKIT_OT_RenderMultiAngle(_KILNKIT_RenderSequence, bpy.types.Operator):
         outdir = fn_render_outdir(context)
         base = fn_render_basename(context)
         self._ma_state = fn_capture_output_state(scene)   # restore filepath/format after the run
+        self._ma_outdir = outdir
+        self._ma_base = base
+        self._ma_paths = {}          # lowercase view → prepared extension-less target
 
         # One job per angle — prepare() places KK_Camera for the angle and returns the
         # target path (None = already exists → skip). fn_place_camera uses the live
@@ -3248,6 +3551,7 @@ class KILNKIT_OT_RenderMultiAngle(_KILNKIT_RenderSequence, bpy.types.Operator):
                     return None
                 if not fn_place_camera(bpy.context, targets, view, sp.camera_lens, sp.camera_margin):
                     return None
+                self._ma_paths[view.lower()] = target     # take-numbered target for the done-hook
                 return target
             return _prepare
 
@@ -3255,6 +3559,7 @@ class KILNKIT_OT_RenderMultiAngle(_KILNKIT_RenderSequence, bpy.types.Operator):
 
         # Headless — no event loop, render synchronously (unchanged behavior)
         if bpy.app.background or context.window is None:
+            fn_isolation_apply(context, targets)
             saved, skipped = [], []
             for job in jobs:
                 target = job['prepare'](scene)
@@ -3267,24 +3572,50 @@ class KILNKIT_OT_RenderMultiAngle(_KILNKIT_RenderSequence, bpy.types.Operator):
                     saved.append(job['label'])
                 except Exception:
                     pass
+            fn_isolation_clear()
             fn_restore_output_state(scene, self._ma_state)
             level, msg = self._result(outdir, saved, skipped, False)
             self.report(level, msg)
+            extra = self._ma_call_hook(scene, saved)
+            if extra:
+                self.report(*extra)
             return {'CANCELLED'} if 'ERROR' in level else {'FINISHED'}
 
         # GUI — modal non-blocking sequence
         if _KILNKIT_RenderSequence._running:
             self.report({'WARNING'}, rpt_("A render is already running — try again when it finishes"))
             return {'CANCELLED'}
-        self._ma_outdir = outdir
+        fn_isolation_apply(context, targets)   # cleared in _sq_finish (complete/cancel)
         self.report({'INFO'}, rpt_("Rendering 4 angles — the render window will step through them"))
         return self._start_sequence(context, jobs)
+
+    def _ma_call_hook(self, scene, saved):
+        """Run the optional done-hook on the views that actually saved. Returns the
+        hook's (report_level, message) or None. Never raises into the render path."""
+        if fn_multiangle_done_hook is None or not saved:
+            return None
+        paths = {}
+        for v in saved:
+            t = self._ma_paths.get(v)
+            if t and os.path.isfile(t + ".png"):
+                paths[v] = t + ".png"
+        if not paths:
+            return None
+        try:
+            return fn_multiangle_done_hook(scene, self._ma_base, self._ma_outdir, paths)
+        except Exception:
+            return None
 
     def _on_sequence_done(self, saved, skipped, cancelled):
         fn_restore_output_state(self._sq_scene, self._ma_state)   # user's Output settings back
         level, msg = self._result(self._ma_outdir, saved, skipped, cancelled)
         self.report(level, msg)                   # runs from modal → still a valid operator context
         print("[Kilnkit] " + msg)
+        if not cancelled:
+            extra = self._ma_call_hook(self._sq_scene, saved)
+            if extra:
+                self.report(*extra)
+                print("[Kilnkit] " + extra[1])
 
 
 class KILNKIT_OT_RenderTurntable(_KILNKIT_RenderSequence, bpy.types.Operator):
@@ -3298,12 +3629,15 @@ class KILNKIT_OT_RenderTurntable(_KILNKIT_RenderSequence, bpy.types.Operator):
         Output state (filepath/format) via the shared helper + the frame range/fps on top."""
         st = fn_capture_output_state(scene)
         st.update({'frame_start': scene.frame_start, 'frame_end': scene.frame_end,
+                   'frame_current': scene.frame_current,
                    'fps': scene.render.fps, 'fps_base': scene.render.fps_base})
         return st
 
     def _restore(self, scene, st):
+        fn_teardown_turntable()              # unparent camera at 0°, drop the pivot
         try:
             scene.frame_start = st['frame_start']; scene.frame_end = st['frame_end']
+            scene.frame_current = st['frame_current']
             scene.render.fps = st['fps']; scene.render.fps_base = st['fps_base']
         except Exception:
             pass
@@ -3322,7 +3656,24 @@ class KILNKIT_OT_RenderTurntable(_KILNKIT_RenderSequence, bpy.types.Operator):
                 return os.path.basename(final)
         return os.path.basename(self._tt_final) + ".mp4"
 
+    def invoke(self, context, event):
+        # Clobber guard (session-16 finding): a camera with its own transform keyframes
+        # fights the orbit silently. Ask only when there is something to lose — the
+        # same principle as the unwrap/assign confirms. EXEC/headless proceeds with a
+        # WARNING in execute() instead.
+        cam = context.scene.camera
+        if cam is not None and fn_camera_has_anim(cam):
+            return context.window_manager.invoke_confirm(
+                self, event,
+                title=iface_("Camera has animation"),
+                message=iface_("The turntable orbit will drive the camera over your keyframes during this render"),
+                confirm_text=iface_("Render Turntable"))
+        return self.execute(context)
+
     def execute(self, context):
+        cam = context.scene.camera
+        if cam is not None and fn_camera_has_anim(cam):
+            self.report({'WARNING'}, rpt_("Camera has animation — the orbit drives it during this render"))
         targets = fn_camera_targets(context)
         if not targets:
             self.report({'ERROR'}, rpt_("Select a mesh object")); return {'CANCELLED'}
@@ -3356,12 +3707,14 @@ class KILNKIT_OT_RenderTurntable(_KILNKIT_RenderSequence, bpy.types.Operator):
         if bpy.app.background or context.window is None:
             fn_setup_video_output(scene, fmt)
             scene.render.filepath = render_fp
+            fn_isolation_apply(context, targets)
             ok = False
             try:
                 bpy.ops.render.render(animation=True)
                 ok = True
             except Exception as e:
                 self.report({'ERROR'}, rpt_("Render failed: {err}").format(err=e))
+            fn_isolation_clear()
             name = self._finalize(ok)
             self._restore(scene, st)
             if ok:
@@ -3375,6 +3728,8 @@ class KILNKIT_OT_RenderTurntable(_KILNKIT_RenderSequence, bpy.types.Operator):
             self.report({'WARNING'}, rpt_("A render is already running — try again when it finishes"))
             self._restore(scene, st)
             return {'CANCELLED'}
+
+        fn_isolation_apply(context, targets)      # cleared in _sq_finish (complete/cancel)
 
         def _prepare(scn):
             fn_setup_video_output(scn, fmt)       # engine sets filepath + starts animation render
@@ -3397,6 +3752,195 @@ class KILNKIT_OT_RenderTurntable(_KILNKIT_RenderSequence, bpy.types.Operator):
             level, msg = {'ERROR'}, rpt_("Turntable render failed")
         self.report(level, msg)
         print("[Kilnkit] " + msg)
+
+
+# ================================================================
+# Finishing guide (journey strip above the tab bar)
+# ================================================================
+
+# Step id → the tab where that step's controls live (guide_next jumps there).
+GUIDE_STEP_TABS = {
+    'MATERIAL': 'MAIN',
+    'UV':       'MAIN',
+    'NAMING':   'BATCH',
+    'SHOT':     'RENDER',
+    'OUTPUT':   'RENDER',
+}
+
+# What to do at each step — the status-bar hint after guide_next jumps (rpt_ at runtime).
+_GUIDE_NEXT_HINT = {
+    'MATERIAL': "Pick a texture folder — One Click builds the material",
+    'UV':       "Finish the UV — use the existing map or create one",
+    'NAMING':   "Set the asset name and run Apply Naming",
+    'SHOT':     "Set up the environment, lights, and camera",
+    'OUTPUT':   "Render & Save writes the file into the output folder",
+}
+
+# The output-existence probe is disk I/O and draw() asks on every redraw → TTL cache.
+_GUIDE_OUT_CACHE = {"key": None, "t": 0.0, "hit": False, "name": ""}
+_GUIDE_OUT_TTL = 2.0
+_GUIDE_OUT_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.exr', '.mp4')
+
+
+def fn_guide_output_exists(context):
+    """True when the output folder already holds a render for the current base name.
+    Uses fn_render_outdir_display (pure path math — draw must never makedirs) and
+    caches the folder scan for a couple of seconds so redraws stay cheap."""
+    key = (fn_render_outdir_display(context), fn_render_basename(context))
+    now = time.monotonic()
+    c = _GUIDE_OUT_CACHE
+    if c["key"] == key and now - c["t"] < _GUIDE_OUT_TTL:
+        return c["hit"]
+    hit, name = False, ""
+    try:
+        with os.scandir(key[0]) as entries:
+            for e in entries:
+                if e.name.startswith(key[1]) and e.name.lower().endswith(_GUIDE_OUT_EXTS):
+                    hit, name = True, e.name
+                    break
+    except OSError:
+        pass
+    c["key"], c["t"], c["hit"], c["name"] = key, now, hit, name
+    return hit
+
+
+def fn_guide_output_name(context):
+    """File name of the render fn_guide_output_exists found ('' when none) — the
+    receipt line on the completed journey strip. Same TTL cache, no extra scan."""
+    fn_guide_output_exists(context)
+    return _GUIDE_OUT_CACHE["name"]
+
+
+def fn_guide_steps(context):
+    """The five-step finishing journey, judged from what the scene actually holds —
+    built nodes, UV layers, names, camera, files on disk — never from settings alone
+    (the uv-status philosophy). Returns five {'id','label','state','detail'} dicts in
+    journey order; state ∈ DONE/TODO/WARN. The UV entry carries 'uv_status' instead
+    of a detail so the panel reuses the _UV_STATUS texts (one source of truth).
+    Labels and details are English source strings — the UI translates at draw time."""
+    sp = context.scene.kilnkit_scene_props
+    obj = context.active_object
+    mesh = obj if (obj and obj.type == 'MESH') else None
+
+    mat = None
+    built = False
+    if mesh:
+        mats = mesh.data.materials
+        if 0 <= sp.active_slot_index < len(mats):
+            mat = mats[sp.active_slot_index]
+        built = any(m and m.node_tree and m.node_tree.nodes.get("KK_Mapping")
+                    for m in mats)
+
+    steps = [{'id': 'MATERIAL', 'label': "Material",
+              'state': 'DONE' if built else 'TODO',
+              'detail': "" if built else
+                        ("No PBR material — pick a texture folder with One Click"
+                         if mesh else "Select a mesh object")}]
+
+    if mesh:
+        uv = fn_uv_status(mesh, sp.uv_method, mat)
+        uv_state = {'KEPT': 'DONE', 'GENERATED': 'DONE', 'BROKEN': 'WARN'}.get(uv, 'TODO')
+        steps.append({'id': 'UV', 'label': "UV", 'state': uv_state,
+                      'detail': "", 'uv_status': uv})
+    else:
+        steps.append({'id': 'UV', 'label': "UV", 'state': 'TODO', 'detail': ""})
+
+    if mesh:
+        base = fn_naming_base(sp, mesh)
+        if not base:
+            named, detail = False, "No asset name — set one or add a slot folder"
+        else:
+            final = fn_naming_final(sp, base)
+            named = mesh.name == final and mesh.data.name == final
+            detail = "" if named else "Run Apply Naming in the Batch tab"
+        steps.append({'id': 'NAMING', 'label': "Name",
+                      'state': 'DONE' if named else 'TODO', 'detail': detail})
+    else:
+        steps.append({'id': 'NAMING', 'label': "Name", 'state': 'TODO', 'detail': ""})
+
+    # A camera of the user's own counts too — Kilnkit respects hand-built setups
+    # (the fn_camera_untouched philosophy). The one stale case (P2, 2026-07-16): an
+    # UNTOUCHED KK_Camera whose placement stamp targeted a different asset — the same
+    # grammar as the turntable freshness contract. Old cameras without the stamp,
+    # touched cameras, and user cameras all stay respected as DONE.
+    cam = context.scene.camera
+    if cam is None:
+        steps.append({'id': 'SHOT', 'label': "Shot", 'state': 'TODO',
+                      'detail': "No scene camera — set up in the Render tab"})
+    else:
+        stale = False
+        if mesh is not None and cam.name == "KK_Camera" and fn_camera_untouched(cam):
+            tg = cam.get("kk_targets")
+            stale = tg is not None and mesh.name not in [str(t) for t in tg]
+        steps.append({'id': 'SHOT', 'label': "Shot",
+                      'state': 'TODO' if stale else 'DONE',
+                      'detail': "Camera is aimed at another asset — re-place it" if stale else ""})
+
+    out_ok = fn_guide_output_exists(context)
+    steps.append({'id': 'OUTPUT', 'label': "Output",
+                  'state': 'DONE' if out_ok else 'TODO',
+                  'detail': "" if out_ok else "No render saved yet for this name"})
+    return steps
+
+
+def fn_guide_current(steps):
+    """Index of the first unfinished step — None when the whole journey is done."""
+    for i, s in enumerate(steps):
+        if s['state'] != 'DONE':
+            return i
+    return None
+
+
+class KILNKIT_OT_GuideNext(bpy.types.Operator):
+    bl_idname = "kilnkit.guide_next"; bl_label = "Next Step"; bl_options = {'REGISTER'}
+    bl_description = "Jump to the tab of the next unfinished step in the finishing journey"
+
+    def execute(self, context):
+        sp = context.scene.kilnkit_scene_props
+        steps = fn_guide_steps(context)
+        cur = fn_guide_current(steps)
+        if cur is None:
+            self.report({'INFO'}, rpt_("All five steps look done"))
+            return {'FINISHED'}
+        step = steps[cur]
+        tab = GUIDE_STEP_TABS[step['id']]
+        if sp.active_tab != tab:
+            sp.active_tab = tab
+        # Land on visible controls, not a folded header — open the section(s) the step's
+        # controls live in (2026-07-15 review). Render-tab sections fold by default;
+        # these are Scene props, so writing them is fine in an operator (only draw can't).
+        # Main/Batch steps need nothing: their controls are always drawn.
+        if step['id'] == 'SHOT':
+            sp.show_render_env = sp.show_render_light = sp.show_render_camera = True
+        elif step['id'] == 'OUTPUT':
+            sp.show_render_output = True
+        # The one safe auto-invoke: nothing exists yet → the one-click folder browser,
+        # which creates nothing until a folder is actually picked. Destructive ops
+        # (Rebuild, unwrap) are never fired from here.
+        obj = context.active_object
+        if (step['id'] == 'MATERIAL' and not bpy.app.background
+                and obj and obj.type == 'MESH' and not obj.kilnkit_slots):
+            return bpy.ops.kilnkit.one_click('INVOKE_DEFAULT', slot_index=0)
+        self.report({'INFO'}, rpt_(_GUIDE_NEXT_HINT[step['id']]))
+        return {'FINISHED'}
+
+
+class KILNKIT_OT_GuideNextAsset(bpy.types.Operator):
+    bl_idname = "kilnkit.guide_next_asset"; bl_label = "Start Next Asset"; bl_options = {'REGISTER'}
+    bl_description = "Clear the asset name and selection so the journey starts fresh for the next mesh"
+
+    def execute(self, context):
+        sp = context.scene.kilnkit_scene_props
+        # Clearing naming_base also defuses the documented stale-name trap — a leftover
+        # asset name would keep stamping every render and sheet of the NEXT asset.
+        sp.naming_base = ""
+        for o in list(context.selected_objects):
+            o.select_set(False)
+        context.view_layer.objects.active = None
+        if sp.active_tab != 'MAIN':
+            sp.active_tab = 'MAIN'
+        self.report({'INFO'}, rpt_("Select the next mesh to finish"))
+        return {'FINISHED'}
 
 
 def _sync_timer():
@@ -3450,11 +3994,17 @@ classes = (
     KILNKIT_OT_CleanupImages,
     KILNKIT_OT_DedupMaterials,
     KILNKIT_OT_ResetSuffix,
+    KILNKIT_OT_TabMove,
     KILNKIT_OT_ResetSettings,
+    KILNKIT_OT_GuideNext,
+    KILNKIT_OT_GuideNextAsset,
     KILNKIT_OT_SyncFromNodes,
     KILNKIT_OT_SetupEnvironment,
     KILNKIT_OT_SetupStudioLights,
     KILNKIT_OT_SetupCamera,
+    KILNKIT_OT_RestoreCameraView,
+    KILNKIT_OT_DetachCamera,
+    KILNKIT_OT_SetResolution,
     KILNKIT_OT_ApplyRenderSettings,
     KILNKIT_OT_RenderSave,
     KILNKIT_OT_RenderMultiAngle,
