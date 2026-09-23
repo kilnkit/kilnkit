@@ -101,6 +101,8 @@ def fn_apply_scale(obj):
         return False
     fn_ensure_object_mode()
     scale = obj.scale.copy()
+    if obj.data.users > 1 or obj.data.library:
+        obj.data = obj.data.copy()
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     for v in bm.verts:
@@ -523,9 +525,35 @@ def fn_load_image(path):
     return existing if existing else bpy.data.images.load(path)
 
 
-def fn_build_nodes(mat, directory, uv_method='TRIPLANAR'):
-    image_paths = fn_scan_textures(directory)
-    if not image_paths:
+def fn_prepare_textures(directory):
+    """Decode every detected file before modifying objects or materials.
+
+    Fresh probes prevent cached images from hiding missing/corrupt files.
+    """
+    probes = []
+    try:
+        paths = fn_scan_textures(directory)
+        if not paths:
+            return None
+        for path in paths.values():
+            img = bpy.data.images.load(path, check_existing=False)
+            probes.append(img)
+            if min(img.size) <= 0 or not img.has_data:
+                return None
+        for img in probes:
+            bpy.data.images.remove(img)
+        probes.clear()
+        return {channel: fn_load_image(path) for channel, path in paths.items()}
+    except (OSError, RuntimeError, ValueError):
+        return None
+    finally:
+        for img in probes:
+            bpy.data.images.remove(img)
+
+
+def fn_build_nodes(mat, directory, uv_method='TRIPLANAR', prepared=None):
+    images = prepared if prepared is not None else fn_prepare_textures(directory)
+    if not images:
         return False
 
     # 4.x creates materials WITHOUT a node tree (use_nodes off by default); 5.x always
@@ -551,10 +579,10 @@ def fn_build_nodes(mat, directory, uv_method='TRIPLANAR'):
     tex = {}
     y = 700
     for m_type in ['basecolor', 'ao', 'roughness', 'metallic', 'normal', 'height']:
-        if m_type not in image_paths:
+        if m_type not in images:
             continue
         t = nodes.new('ShaderNodeTexImage')
-        t.image = fn_load_image(image_paths[m_type])
+        t.image = images[m_type]
         t.image.colorspace_settings.name = 'sRGB' if m_type == 'basecolor' else 'Non-Color'
         if use_box:                       # triplanar — 3-axis box projection
             t.projection = 'BOX'
@@ -700,6 +728,11 @@ def fn_run_pipeline(obj, slot_index, sp):
         return False, rpt_("Keep Existing UV needs a UV map — this mesh has none")
 
     directory = slots[slot_index].directory
+    images = fn_prepare_textures(directory)
+    if not images:
+        return False, rpt_("No supported, readable textures found in the folder")
+    if obj.data.users > 1 or obj.data.library:
+        obj.data = obj.data.copy()
     dir_path  = os.path.normpath(bpy.path.abspath(directory))
     mat_name  = f"KK_{os.path.basename(dir_path)}"
     mat       = fn_resolve_material(obj, mat_name, slot_index, sp.mat_conflict, directory)
@@ -719,7 +752,8 @@ def fn_run_pipeline(obj, slot_index, sp):
         if not uv_ok:
             return False, rpt_("No 3D Viewport found")
     if sp.step_pbr:
-        fn_build_nodes(mat, directory, sp.uv_method)
+        if not fn_build_nodes(mat, directory, sp.uv_method, prepared=images):
+            return False, rpt_("No supported, readable textures found in the folder")
         uv, ao, normal, height = fn_read_slider_values(mat)
         slots[slot_index].uv_scale        = uv
         slots[slot_index].ao_strength     = ao
@@ -858,19 +892,9 @@ class KILNKIT_OT_ImportSubfolders(_KILNKIT_ProgressiveBuild, bpy.types.Operator)
             self.report({'WARNING'}, rpt_("All folders are already in slots — nothing new to add")); return {'CANCELLED'}
 
         sp = context.scene.kilnkit_scene_props
-        fn_ensure_object_mode()
 
-        # Scale/UV once per object (finished before texture loading)
-        if sp.step_scale and not fn_apply_scale(obj):
-            self.report({'WARNING'}, rpt_("Shape Keys present — skipped scale apply"))
-        if sp.step_uv:
-            if sp.uv_method == 'UV':
-                fn_smart_uv(obj, sp)
-            elif sp.uv_method == 'CUBE':
-                fn_cube_uv(obj, sp)
-            elif sp.uv_method == 'SLIM':
-                fn_slim_uv(obj, sp)
-            # TRIPLANAR/OBJECT — coordinate-based; KEEP — reuses the existing UVs. Skip either way.
+        # Geometry starts only after the first folder passes image decoding.
+        self._geometry_done = False
 
         # Progressive — one slot+material per folder (spreads heavy texture loads across ticks)
         self._obj = obj
@@ -882,13 +906,29 @@ class KILNKIT_OT_ImportSubfolders(_KILNKIT_ProgressiveBuild, bpy.types.Operator)
         obj, sp = self._obj, self._sp
         if not obj:
             return False
+        images = fn_prepare_textures(sub)
+        if not images:
+            self.report({'WARNING'}, rpt_("No supported, readable textures found in the folder"))
+            return False
+        if not self._geometry_done:
+            fn_ensure_object_mode()
+            if obj.data.users > 1 or obj.data.library:
+                obj.data = obj.data.copy()
+            if sp.step_scale and not fn_apply_scale(obj):
+                self.report({'WARNING'}, rpt_("Shape Keys present — skipped scale apply"))
+            if sp.step_uv and sp.uv_method in {'UV', 'CUBE', 'SLIM'}:
+                uv_fn = {'CUBE': fn_cube_uv, 'SLIM': fn_slim_uv}.get(sp.uv_method, fn_smart_uv)
+                if not uv_fn(obj, sp):
+                    return False
+            self._geometry_done = True
         obj.kilnkit_slots.add()
         idx = len(obj.kilnkit_slots) - 1
         obj.kilnkit_slots[idx].directory = sub
         if sp.step_pbr:
             dir_path = os.path.normpath(bpy.path.abspath(sub))
             mat = fn_resolve_material(obj, f"KK_{os.path.basename(dir_path)}", idx, sp.mat_conflict, sub)
-            fn_build_nodes(mat, sub, sp.uv_method)
+            if not fn_build_nodes(mat, sub, sp.uv_method, prepared=images):
+                return False
             uv, ao, normal, height = fn_read_slider_values(mat)
             obj.kilnkit_slots[idx].uv_scale        = uv
             obj.kilnkit_slots[idx].ao_strength     = ao
@@ -897,6 +937,9 @@ class KILNKIT_OT_ImportSubfolders(_KILNKIT_ProgressiveBuild, bpy.types.Operator)
         return True
 
     def _finish_report(self, context, cancelled):
+        if not self._done:
+            self.report({'WARNING'}, rpt_("No supported, readable textures found in the folder"))
+            return {'CANCELLED'}
         self._sp.active_slot_index = self._first_index
         msg = rpt_("Imported {n} subfolders as slots").format(n=self._done)
         if self._skipped:
@@ -1041,9 +1084,16 @@ class KILNKIT_OT_RebuildPBR(bpy.types.Operator):
         if self.slot_index >= len(slots) or not slots[self.slot_index].directory:
             self.report({'ERROR'}, rpt_("Set a folder first")); return {'CANCELLED'}
         sp       = context.scene.kilnkit_scene_props
+        images = fn_prepare_textures(slots[self.slot_index].directory)
+        if not images:
+            self.report({'ERROR'}, rpt_("No supported, readable textures found in the folder"))
+            return {'CANCELLED'}
+        if obj.data.users > 1 or obj.data.library:
+            obj.data = obj.data.copy()
         dir_path = os.path.normpath(bpy.path.abspath(slots[self.slot_index].directory))
         mat      = fn_resolve_material(obj, f"KK_{os.path.basename(dir_path)}", self.slot_index, sp.mat_conflict, slots[self.slot_index].directory)
-        fn_build_nodes(mat, slots[self.slot_index].directory, sp.uv_method)
+        if not fn_build_nodes(mat, slots[self.slot_index].directory, sp.uv_method, prepared=images):
+            return {'CANCELLED'}
         self.report({'INFO'}, rpt_("PBR nodes rebuilt"))
         return {'FINISHED'}
 
@@ -1242,9 +1292,16 @@ class KILNKIT_OT_StepPBR(bpy.types.Operator):
         slots = obj.kilnkit_slots
         if self.slot_index >= len(slots) or not slots[self.slot_index].directory:
             self.report({'ERROR'}, rpt_("Set a folder first")); return {'CANCELLED'}
+        images = fn_prepare_textures(slots[self.slot_index].directory)
+        if not images:
+            self.report({'ERROR'}, rpt_("No supported, readable textures found in the folder"))
+            return {'CANCELLED'}
+        if obj.data.users > 1 or obj.data.library:
+            obj.data = obj.data.copy()
         dir_path = os.path.normpath(bpy.path.abspath(slots[self.slot_index].directory))
         mat = fn_resolve_material(obj, f"KK_{os.path.basename(dir_path)}", self.slot_index, sp.mat_conflict, slots[self.slot_index].directory)
-        fn_build_nodes(mat, slots[self.slot_index].directory, sp.uv_method)
+        if not fn_build_nodes(mat, slots[self.slot_index].directory, sp.uv_method, prepared=images):
+            return {'CANCELLED'}
         self.report({'INFO'}, rpt_("PBR nodes built"))
         return {'FINISHED'}
 
@@ -1345,7 +1402,8 @@ def fn_build_library_material(directory):
        mesh, so it must not depend on a UV map that the future target may not have. Using
        the scene's uv_method here would make the result depend on whatever was selected at
        build time."""
-    if not fn_scan_textures(directory):
+    images = fn_prepare_textures(directory)
+    if not images:
         return None
     dir_norm = os.path.normcase(os.path.normpath(bpy.path.abspath(directory)))
     existing = next(
@@ -1359,7 +1417,10 @@ def fn_build_library_material(directory):
         base = os.path.basename(os.path.normpath(bpy.path.abspath(directory)))
         mat = bpy.data.materials.new(name=f"KK_{base}")
     fn_ensure_nodes(mat)
-    fn_build_nodes(mat, directory, LIBRARY_UV_METHOD)
+    if not fn_build_nodes(mat, directory, LIBRARY_UV_METHOD, prepared=images):
+        if existing is None:
+            bpy.data.materials.remove(mat)
+        return None
     mat.use_fake_user = True
     mat["kilnkit_lib"] = True
     mat["kilnkit_src"] = directory
@@ -1420,6 +1481,9 @@ class KILNKIT_OT_LibBuildSubfolders(_KILNKIT_ProgressiveBuild, bpy.types.Operato
         return bool(fn_build_library_material(sub))
 
     def _finish_report(self, context, cancelled):
+        if not self._done:
+            self.report({'WARNING'}, rpt_("No supported, readable textures found in the folder"))
+            return {'CANCELLED'}
         msg = rpt_("Created {n} library materials").format(n=self._done)
         if cancelled:
             msg = rpt_("Cancelled — ") + msg
@@ -1437,10 +1501,12 @@ class KILNKIT_OT_LibRebuild(bpy.types.Operator):
         if not mat or not mat.get("kilnkit_src"):
             self.report({'ERROR'}, rpt_("Not a library material")); return {'CANCELLED'}
         directory = mat["kilnkit_src"]
-        if not fn_scan_textures(directory):
+        images = fn_prepare_textures(directory)
+        if not images:
             self.report({'WARNING'}, rpt_("No textures found in the source folder")); return {'CANCELLED'}
         fn_ensure_nodes(mat)
-        fn_build_nodes(mat, directory, context.scene.kilnkit_scene_props.uv_method)
+        if not fn_build_nodes(mat, directory, context.scene.kilnkit_scene_props.uv_method, prepared=images):
+            return {'CANCELLED'}
         mat.use_fake_user = True
         if mat.asset_data:
             try:
@@ -1844,31 +1910,67 @@ class KILNKIT_OT_GenerateLOD(bpy.types.Operator):
 
     def execute(self, context):
         sp = context.scene.kilnkit_scene_props
-        targets = [o for o in context.selected_objects if o.type == 'MESH']
+        targets = []
+        for selected in context.selected_objects:
+            if selected.type != 'MESH':
+                continue
+            owner = selected.get("kk_lod_source")
+            obj = (owner if isinstance(owner, bpy.types.Object) and owner.type == 'MESH'
+                   and selected.get("kk_lod_scene") == context.scene
+                   and owner.name in context.scene.objects else selected)
+            if obj not in targets:
+                targets.append(obj)
         if not targets:
             self.report({'ERROR'}, rpt_("Select a mesh object")); return {'CANCELLED'}
         count, step = sp.lod_count, sp.lod_step
         made = 0
         for obj in targets:
             base = fn_lod_base_name(obj.name)
-            coll = obj.users_collection[0] if obj.users_collection else context.scene.collection
-            # Remove the existing LOD set (idempotent re-runs) — the original obj is untouched
-            pat = re.compile(re.escape(base) + r'_LOD\d+$')
-            for ex in list(bpy.data.objects):
-                if ex != obj and ex.type == 'MESH' and pat.match(ex.name):
-                    bpy.data.objects.remove(ex, do_unlink=True)
+            scene_collections = {context.scene.collection, *context.scene.collection.children_recursive}
+            coll = next((c for c in obj.users_collection if c in scene_collections), context.scene.collection)
             for i in range(count):
-                dup = obj.copy()
+                owned = [o for o in bpy.data.objects
+                         if o != obj and o.get("kk_lod_source") == obj
+                         and o.get("kk_lod_scene") == context.scene
+                         and o.get("kk_lod_level") == i
+                         and set(o.users_scene) == {context.scene}
+                         and tuple(o.users_collection) == (coll,)]
+                # Ambiguous copies or outputs moved/shared elsewhere are preserved.
+                # Update the same object so parenting/constraints keep valid references.
+                dup = owned[0] if len(owned) == 1 else obj.copy()
+                old_mesh = dup.data if len(owned) == 1 else None
                 dup.data = obj.data.copy()
-                dup.name = f"{base}_LOD{i}"
+                if old_mesh is not None and old_mesh.users == 0:
+                    bpy.data.meshes.remove(old_mesh)
+                if len(owned) != 1:
+                    dup.name = f"{base}_LOD{i}"
+                    coll.objects.link(dup)
+                if len(owned) == 1:
+                    # Regenerate source transforms/stack while retaining the object ID:
+                    # external parenting, constraints and collection links stay valid.
+                    dup.parent = obj.parent
+                    dup.parent_type = obj.parent_type
+                    dup.parent_bone = obj.parent_bone
+                    dup.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+                    dup.rotation_mode = obj.rotation_mode
+                    for attr in ('location', 'rotation_euler', 'rotation_quaternion',
+                                 'rotation_axis_angle', 'scale', 'delta_location',
+                                 'delta_rotation_euler', 'delta_rotation_quaternion', 'delta_scale'):
+                        setattr(dup, attr, getattr(obj, attr))
+                    dup.modifiers.clear()
+                    with context.temp_override(object=obj, active_object=obj,
+                                               selected_objects=[obj, dup], selected_editable_objects=[obj, dup]):
+                        for modifier in obj.modifiers:
+                            bpy.ops.object.modifier_copy_to_selected(modifier=modifier.name)
+                dup.select_set(False)
                 dup.data.name = dup.name
-                for mod in [mm for mm in dup.modifiers if mm.type == 'DECIMATE']:
-                    dup.modifiers.remove(mod)
+                dup["kk_lod_source"] = obj
+                dup["kk_lod_scene"] = context.scene
+                dup["kk_lod_level"] = i
                 ratio = step ** i
                 if ratio < 0.999:
                     m = dup.modifiers.new(name="KK_LOD", type='DECIMATE')
                     m.ratio = ratio
-                coll.objects.link(dup)
                 made += 1
         self.report({'INFO'}, rpt_("Created {n} LODs ({m} meshes × {c} levels)").format(n=made, m=len(targets), c=count))
         return {'FINISHED'}
@@ -1892,6 +1994,11 @@ class KILNKIT_OT_BatchRun(bpy.types.Operator):
         if not active_slots:
             self.report({'ERROR'}, rpt_("The active object has no slots")); return {'CANCELLED'}
 
+        prepared = [fn_prepare_textures(slot.directory) for slot in active_slots]
+        if not all(prepared):
+            self.report({'ERROR'}, rpt_("No supported, readable textures found in the folder"))
+            return {'CANCELLED'}
+
         slider_vals = []
         for i in range(len(active_slots)):
             mat = active.data.materials[i] if i < len(active.data.materials) else None
@@ -1906,6 +2013,8 @@ class KILNKIT_OT_BatchRun(bpy.types.Operator):
                 fail_names.append(rpt_("{name} (no UV map)").format(name=obj.name))
                 continue
 
+            if obj.data.users > 1 or obj.data.library:
+                obj.data = obj.data.copy()
             # Sync slot directories
             for i in range(len(active_slots)):
                 while len(obj.kilnkit_slots) <= i:
@@ -1943,7 +2052,10 @@ class KILNKIT_OT_BatchRun(bpy.types.Operator):
                     if sp.mat_conflict == 'OVERWRITE' and obj != active:
                         fn_apply_slider_values(mat, *slider_vals[i])
                     else:
-                        fn_build_nodes(mat, active_slots[i].directory, sp.uv_method)
+                        if not fn_build_nodes(mat, active_slots[i].directory, sp.uv_method, prepared=prepared[i]):
+                            obj_ok = False
+                            fail_names.append(obj.name)
+                            continue
                         fn_apply_slider_values(mat, *slider_vals[i])
             if obj_ok:
                 success += 1
@@ -1956,7 +2068,7 @@ class KILNKIT_OT_BatchRun(bpy.types.Operator):
                 n=success, list=preview, extra=extra))
         else:
             self.report({'INFO'}, rpt_("Batch done — succeeded: {n}").format(n=success))
-        return {'FINISHED'}
+        return {'FINISHED'} if success else {'CANCELLED'}
 
 
 # ── Naming ─────────────────────────────────────────────────────
@@ -2191,38 +2303,73 @@ class KILNKIT_OT_CleanupImages(bpy.types.Operator):
 
 
 def _dup_signature(mat):
-    """Duplicate signature — texture set + mapping + slider/node values.
+    """Conservative equality proof for the supported Kilnkit graph vocabulary.
 
-    The mapping (coordinate source + projection) belongs in the signature: two materials
-    with identical textures but different mappings are *not* duplicates, and merging them
-    would silently re-map one object. Without it, an Object-coords material and a
-    UV-coords material hash the same (both FLAT).
+    Compare exact defaults, links and writable RNA settings, never rounded values.
+    Unsupported nodes, animation, linked data and custom properties are excluded.
+    Node names are stable graph keys: renaming may miss a duplicate, never merge
+    distinct graphs. Image identity is deliberately stricter than filepath equality.
     """
-    if not mat.node_tree:
+    nt = mat.node_tree
+    if not nt or mat.library or mat.animation_data or nt.animation_data or nt.keys():
         return None
-    nodes = mat.node_tree.nodes
-    imgs = sorted({os.path.normcase(os.path.normpath(bpy.path.abspath(n.image.filepath)))
-                   for n in nodes if n.type == 'TEX_IMAGE' and n.image and n.image.filepath})
-    if not imgs:
+    allowed = {'ShaderNodeTexCoord', 'ShaderNodeMapping', 'ShaderNodeBsdfPrincipled',
+               'ShaderNodeOutputMaterial', 'ShaderNodeTexImage', 'ShaderNodeMix',
+               'ShaderNodeNormalMap', 'ShaderNodeDisplacement'}
+    if not nt.nodes.get("KK_Mapping") or not any(n.type == 'TEX_IMAGE' for n in nt.nodes):
         return None
-    def r(v):
-        return round(float(v), 3)
-    vals = [("coord", fn_material_coord_source(mat) or "?"),
-            ("proj", tuple(sorted({n.projection for n in nodes if n.type == 'TEX_IMAGE'})))]
-    if "KK_Mapping" in nodes:
-        s = nodes["KK_Mapping"].inputs[3].default_value
-        vals.append(("uv", r(s[0]), r(s[1]), r(s[2])))
-    if "KK_AO_Mix" in nodes:
-        vals.append(("ao", r(nodes["KK_AO_Mix"].inputs[0].default_value)))
-    if "KK_NormalMap" in nodes:
-        vals.append(("nrm", r(nodes["KK_NormalMap"].inputs[0].default_value)))
-    if "KK_Displacement" in nodes:
-        vals.append(("h", r(nodes["KK_Displacement"].inputs[2].default_value)))
-    for n in nodes:
-        if n.type == 'TEX_IMAGE' and n.projection == 'BOX':
-            vals.append(("blend", r(n.projection_blend)))
-            break
-    return (tuple(imgs), tuple(vals))
+    if any(n.bl_idname not in allowed or n.keys() for n in nt.nodes):
+        return None
+    if any(k not in {'kilnkit_src', 'kilnkit_lib', '_RNA_UI', 'cycles'} for k in mat.keys()):
+        return None
+
+    def settings(value, ignored=()):
+        out = []
+        for prop in value.bl_rna.properties:
+            key = prop.identifier
+            if key in ignored or prop.is_readonly:
+                continue
+            item = getattr(value, key)
+            if prop.type == 'POINTER':
+                if item is not None and not isinstance(item, bpy.types.ID):
+                    raise ValueError("Unsupported nested settings " + key)
+                item = item.as_pointer() if item is not None else None
+            elif prop.type == 'COLLECTION':
+                raise ValueError("Unsupported collection settings")
+            elif getattr(prop, 'is_array', False):
+                item = tuple(item)
+            elif isinstance(item, set):
+                item = tuple(sorted(item))
+            out.append((key, item))
+        return tuple(out)
+
+    try:
+        material = settings(mat, {'name', 'name_full', 'use_fake_user', 'use_nodes',
+                                 'node_tree', 'preview', 'asset_data'})
+        cycles = settings(mat.cycles) if hasattr(mat, 'cycles') else None
+        graph = []
+        for n in nt.nodes:
+            if n.type == 'TEX_IMAGE' and (not n.image or getattr(n.image, "animation_data", None)):
+                return None
+            node = settings(n, {'location', 'location_absolute', 'width', 'height',
+                                'select', 'show_options', 'show_preview', 'hide',
+                                'label', 'color', 'use_custom_color', 'parent'})
+            defaults = tuple((socket.identifier, settings(socket, {"enabled"})) for socket in n.inputs)
+            image_user = settings(n.image_user) if n.type == 'TEX_IMAGE' else None
+            texture_settings = None
+            if n.type == 'TEX_IMAGE':
+                # RNA exposes these nested shader settings as read-only pointers.
+                # Ramps carry arbitrary element collections; conservatively exclude.
+                if n.color_mapping.use_color_ramp:
+                    return None
+                texture_settings = (settings(n.texture_mapping), settings(n.color_mapping))
+            graph.append((n.name, node, defaults, image_user, texture_settings))
+        links = tuple(sorted((l.from_node.name, l.from_socket.identifier,
+                              l.to_node.name, l.to_socket.identifier, l.is_muted)
+                             for l in nt.links))
+        return material, cycles, tuple(sorted(graph)), links
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _pick_canonical(mats):
@@ -2272,9 +2419,8 @@ class KILNKIT_OT_DedupMaterials(bpy.types.Operator):
         l.label(text="Duplicates are deleted and their users remapped to the kept material.")
 
     def execute(self, context):
-        groups = getattr(self, "_groups", None)
-        if groups is None:
-            groups = fn_find_duplicate_materials()
+        # Revalidate after the dialog: materials may have changed while it was open.
+        groups = fn_find_duplicate_materials()
         merged = 0
         for canon, dups in groups:
             for d in dups:
@@ -2998,7 +3144,7 @@ def fn_setup_png_output(scene):
 
 def fn_render_target_path(outdir, basename, mode, ext=".png"):
     """Final render path per exist-mode (extension-less — Blender appends the extension).
-    No collision → unchanged regardless of mode. NUMBER = first free _001.._999,
+    No collision → unchanged regardless of mode. NUMBER = first free _001 and up,
     OVERWRITE = same path, SKIP = None (skipped). Unlike Blender frame numbers
     (separator-less 0001), the number is an _NNN take counter."""
     base = os.path.join(outdir, basename)
@@ -3008,11 +3154,12 @@ def fn_render_target_path(outdir, basename, mode, ext=".png"):
         return base
     if mode == 'SKIP':
         return None
-    for i in range(1, 1000):               # NUMBER (default) — find a free number
+    i = 1
+    while True:                           # Never fall back to overwriting an existing file
         cand = f"{base}_{i:03d}"
         if not os.path.exists(cand + ext):
             return cand
-    return base                            # fallback: overwrite past 999
+        i += 1
 
 
 def fn_iter_fcurves(action):
@@ -3791,15 +3938,35 @@ def fn_guide_output_exists(context):
     c = _GUIDE_OUT_CACHE
     if c["key"] == key and now - c["t"] < _GUIDE_OUT_TTL:
         return c["hit"]
-    hit, name = False, ""
+    # Match the complete output stem, not an asset-name prefix (Chair != ChairLarge).
+    # Keep native stills, named views, numbered takes, and turntable frame sequences.
+    pattern = re.compile(
+        re.escape(key[1])
+        + r"(?:_(?:front|threeq|side|top|sheet)(?:_\d{3,})?"
+          r"|_turntable(?:_\d{3,})?(?:_\d{4,})?|_\d{3,})?"
+        + r"(?:" + "|".join(re.escape(ext) for ext in _GUIDE_OUT_EXTS) + r")$"
+    )
+    latest = None
     try:
         with os.scandir(key[0]) as entries:
             for e in entries:
-                if e.name.startswith(key[1]) and e.name.lower().endswith(_GUIDE_OUT_EXTS):
-                    hit, name = True, e.name
-                    break
+                stem, ext = os.path.splitext(e.name)
+                if not pattern.fullmatch(stem + ext.lower()):
+                    continue
+                try:
+                    if not e.is_file():
+                        continue
+                    st = e.stat()
+                    if st.st_size <= 0:
+                        continue
+                except OSError:      # a file may disappear while the folder is scanned
+                    continue
+                candidate = (st.st_mtime_ns, e.name)
+                if latest is None or candidate > latest:
+                    latest = candidate
     except OSError:
         pass
+    hit, name = latest is not None, latest[1] if latest else ""
     c["key"], c["t"], c["hit"], c["name"] = key, now, hit, name
     return hit
 

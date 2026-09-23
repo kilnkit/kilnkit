@@ -235,6 +235,7 @@ _ko = {
     ("*", "Select an object"): "오브젝트를 선택하세요",
     ("*", "Select an active object"): "활성 오브젝트를 선택하세요",
     ("*", "Slot {n}: set a folder first"): "슬롯 {n}: 폴더를 지정하세요",
+    ("*", "No supported, readable textures found in the folder"): "폴더에서 지원되는 읽기 가능한 텍스처를 찾지 못했습니다",
     ("*", "Set a folder first"): "폴더를 지정하세요",
     ("*", "No 3D Viewport found"): "3D Viewport를 찾을 수 없습니다",
     ("*", "Choose a folder"): "폴더를 선택하세요",
