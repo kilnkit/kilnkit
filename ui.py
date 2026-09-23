@@ -12,6 +12,7 @@ except Exception:
     EDITION = "full"
 
 from .props import ADDON_VERSION
+from .ui_helpers import note, panel_width, section as _section, output_destination, output_result
 from .operators import (
     fn_scan_textures, fn_get_basecolor_image, fn_naming_final,
     fn_slot_folder_synced, fn_first_slot_dir, fn_find_sidecar,
@@ -50,7 +51,7 @@ _MAP_METHOD_DESC = {
 # Keys come from operators.fn_uv_status().
 _UV_STATUS = {
     'BROKEN':    ("No UV map — material samples UV coords", 'ERROR'),
-    'NO_UV':     ("No UV map — preview only. Baking and export need one", 'ERROR'),
+    'NO_UV':     ("No UV map — preview only. Baking and export need one", 'INFO'),
     'IGNORED':   ("Existing UV map is not being used (preview)", 'INFO'),
     'KEPT':      ("Using the mesh's existing UV map", 'CHECKMARK'),
     'GENERATED': ("UV map created by Kilnkit", 'CHECKMARK'),
@@ -89,7 +90,7 @@ class KILNKIT_UL_SlotList(bpy.types.UIList):
 
         row = layout.row(align=True)
         row.label(
-            text=f"Slot {slot_index+1}",
+            text=iface_("Slot {n}").format(n=slot_index + 1),
             icon='CHECKMARK' if has_mat else 'LAYER_USED'
         )
         if has_mat:
@@ -144,21 +145,22 @@ class KILNKIT_UL_LibList(bpy.types.UIList):
 # hiding happens here, at draw time, and the dispatch falls back for lite.
 _PAID = render_queue is not None and EDITION != 'lite'
 
-# Tab id → (icon, display name). Six text tabs get clipped in a narrow N panel,
-# so: icon tabs + one line below with the current tab name (no icon-only guessing).
+# Stable tab IDs are file-format identifiers; labels describe the user's task.
+# New capabilities belong within a task section before adding another category.
 _TAB_META = {
-    'MAIN':     ('MATERIAL',      "Main"),
+    'MAIN':     ('MATERIAL',      "Materials"),
     'SETTINGS': ('PREFERENCES',   "Settings"),
-    'BATCH':    ('MOD_ARRAY',     "Batch"),
+    'BATCH':    ('OUTLINER_OB_MESH', "Prepare"),
     'LIBRARY':  ('ASSET_MANAGER', "Library"),
     'RENDER':   ('RENDER_STILL',  "Render"),
-    'PUBLISH':  ('EXPORT',        "Publish"),   # paid — drawn only when _PAID
+    'PUBLISH':  ('EXPORT',        "Output"),   # paid — drawn only when _PAID
 }
 
 
 def _draw_tab_bar(layout, sp, shown_tab):
-    row = layout.row(align=True)
-    row.scale_y = 1.2   # full-width tab bar slightly lower (1.5→1.2); icon glyphs are fixed-size → only button height changes
+    grid = layout.grid_flow(row_major=True, columns=3 if panel_width() >= 440 else 2,
+                            even_columns=True, even_rows=True, align=True)
+    grid.scale_y = 1.15
     try:
         _order = fn_tab_order()   # prefs CSV, sanitized — user-reorderable in Preferences
     except Exception:
@@ -167,10 +169,8 @@ def _draw_tab_bar(layout, sp, shown_tab):
         meta = _TAB_META.get(tab_id)
         if meta is None or (tab_id == 'PUBLISH' and not _PAID):
             continue
-        row.prop_enum(sp, "active_tab", tab_id, text="", icon=meta[0])
-    cur = _TAB_META.get(shown_tab)
-    if cur:
-        layout.label(text="▍ " + iface_(cur[1]), icon=cur[0])
+        grid.prop_enum(sp, "active_tab", tab_id, text=iface_(meta[1], _I18N_CTX),
+                       translate=False, icon=meta[0])
     layout.separator()
 
 
@@ -195,31 +195,20 @@ def _short_dir(path):
 
 
 def _draw_guide_strip(layout, context, sp):
-    """The finishing-journey strip above the tab bar — five steps judged from the
-    actual scene state (fn_guide_steps), one next-step button, visible on every tab.
-    draw() stays read-only: judging never writes, the fold toggle is a Scene prop.
-    Step labels are short/common words, so they are looked up in the add-on context
-    (_I18N_CTX) to keep our wording over the core catalog's."""
-    steps = fn_guide_steps(context)
-    cur = fn_guide_current(steps)
-    done = sum(1 for s in steps if s['state'] == 'DONE')
-
-    box = layout.box()
-    head = box.row(align=True)
-    head.prop(sp, "guide_show", text="", emboss=False,
-              icon='TRIA_DOWN' if sp.guide_show else 'TRIA_RIGHT')
-    head.label(text=iface_("Finishing Guide") + f"  {done}/5")
+    """Optional checklist. A closed guide does no scene or output-folder probing."""
+    box = _section(layout, sp, "Finishing Guide", "guide_show")
     if not sp.guide_show:
         return
+    steps = fn_guide_steps(context)
+    cur = fn_guide_current(steps)
 
-    # Icon + step number only — five full labels clip in a narrow N panel (the same
-    # reason the tab bar is icon-only). The current step is named by the button below.
-    row = box.row(align=True)
+    note(box, "Optional checks — use only the steps your asset needs", 'INFO')
     for i, s in enumerate(steps):
         icon = ('ERROR' if s['state'] == 'WARN'
                 else 'PLAY' if i == cur
                 else _GUIDE_STATE_ICON[s['state']])
-        row.label(text=str(i + 1), icon=icon)
+        box.label(text=f"{i + 1}. " + iface_(s['label'], _I18N_CTX), icon=icon,
+                   translate=False)
 
     r = context.scene.render
     rx = int(r.resolution_x * r.resolution_percentage / 100)
@@ -249,8 +238,8 @@ def _draw_guide_strip(layout, context, sp):
         if overriding:
             warn = res.row()
             warn.alert = True
-            warn.label(text=iface_("Asset Name overrides — selected mesh is '{m}'")
-                       .format(m=_mesh_name), icon='ERROR')
+            note(warn, iface_("Asset Name overrides — selected mesh is '{m}'")
+                 .format(m=_mesh_name), 'ERROR', translate=False)
         res.label(text=iface_("Output", _I18N_CTX) + f"  {rx}×{ry} PNG", icon='OUTPUT')
         res.label(text="→ " + _short_dir(fn_render_outdir_display(context)), icon='BLANK1')
 
@@ -258,25 +247,12 @@ def _draw_guide_strip(layout, context, sp):
     detail = _UV_STATUS[s['uv_status']][0] if s.get('uv_status') else s['detail']
     line = box.row()
     line.alert = s['state'] == 'WARN'
-    line.label(text=iface_(detail), icon='DOT')
+    note(line, detail, 'DOT')
     nb = box.row()
     nb.alignment = 'RIGHT'
     nb.operator("kilnkit.guide_next",
                 text=iface_("Next: {step}").format(step=iface_(s['label'], _I18N_CTX)),
                 icon='FORWARD')
-
-
-def _section(layout, sp, label, prop_name):
-    """Toggle section header — returns the box (open or closed).
-    The label is pre-translated in the add-on context (avoids core-catalog
-    collisions — e.g. core turns "Lighting" into a different Korean word)."""
-    box = layout.box()
-    row = box.row()
-    row.prop(sp, prop_name,
-             text=iface_(label, _I18N_CTX),
-             icon='TRIA_DOWN' if getattr(sp, prop_name) else 'TRIA_RIGHT',
-             emboss=False)
-    return box
 
 
 # Apply-button label per method — the button always applies whatever the dropdown shows.
@@ -305,8 +281,8 @@ def _draw_uv_finish(layout, obj, sp, idx, mat):
     status = fn_uv_status(obj, sp.uv_method, mat)
     text, icon = _UV_STATUS[status]
     line = layout.row()
-    line.alert = status in ('NO_UV', 'BROKEN')
-    line.label(text=text, icon=icon)
+    line.alert = status == 'BROKEN'
+    note(line, text, icon)
 
     # Shortcut for the one move that makes sense from here — saves opening the dropdown.
     if status in ('NO_UV', 'BROKEN'):
@@ -319,8 +295,7 @@ def _draw_uv_finish(layout, obj, sp, idx, mat):
     apply_row = row.row(align=True)
     apply_row.enabled = not (sp.uv_method == 'KEEP' and not fn_mesh_has_uv(obj))
     apply_row.operator("kilnkit.reapply_uv", text=label, icon=licon).slot_index = idx
-    # Rebuild clears the node graph (hand-added nodes are lost) — kept, but out of the way.
-    row.operator("kilnkit.rebuild_pbr", text="", icon='FILE_REFRESH').slot_index = idx
+    # Destructive rebuilding is named explicitly under Fine Tuning, not a lookalike icon.
 
 
 def _slot_has_faces(obj, idx):
@@ -361,7 +336,6 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         # draw — the session-19 FFmpeg-probe trap), so coerce read-only.
         shown_tab = sp.active_tab if (_PAID or sp.active_tab != 'PUBLISH') else 'MAIN'
 
-        _draw_guide_strip(l, context, sp)
         _draw_tab_bar(l, sp, shown_tab)
 
         # ── Main tab ─────────────────────────────────────────
@@ -391,6 +365,9 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         elif shown_tab == 'PUBLISH':
             render_queue.draw_tab(context, l)
 
+        l.separator()
+        _draw_guide_strip(l, context, sp)
+
     # ── Main ─────────────────────────────────────────────────
 
     def _draw_main(self, context, l, sp, obj):
@@ -398,45 +375,26 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             l.label(text="Select a mesh object", icon='INFO')
             return
 
-        # Object info + Decimate
-        info = l.box()
-        row  = info.row()
-        row.label(text=obj.name, icon='OBJECT_DATA')
-        row.label(text=iface_("Polygons  {n:,}").format(n=len(obj.data.polygons)))
-        opt = info.row(align=True)
-        opt.prop(sp, "show_mesh_opt", text="Decimate",
-                 icon='TRIA_DOWN' if sp.show_mesh_opt else 'TRIA_RIGHT',
-                 emboss=False)
-        if sp.show_mesh_opt:
-            col = info.column(align=True)
-            col.prop(sp, "decimate_ratio", slider=True)
-            col.operator("kilnkit.decimate", text="Apply", icon='MOD_DECIM')
-
-        l.separator()
+        note(l, obj.name, 'OBJECT_DATA', translate=False)
         slots = obj.kilnkit_slots
 
         # No slots yet — one folder pick sets up slot, UV, and PBR
         if not slots:
             box = l.box()
-            # If the object already has materials (dragged in etc.), offer slot recognition first
-            if any(m for m in obj.data.materials):
-                box.label(text="This object already has materials", icon='INFO')
-                r0 = box.row(); r0.scale_y = 1.5
-                r0.operator("kilnkit.slots_from_object",
-                            text="Slots from Materials", icon='IMPORT')
-                box.separator()
-            box.label(text="Picking a folder sets up slot, UV, and PBR automatically", icon='INFO')
+            note(box, "Choose textures once. Scale, mapping, and PBR follow your settings.", 'INFO')
             row = box.row()
-            row.scale_y = 1.8
-            row.operator("kilnkit.one_click", text="Start by Picking a Texture Folder",
+            row.scale_y = 1.5
+            row.operator("kilnkit.one_click", text="Choose Texture Folder",
                          icon='FILE_FOLDER').slot_index = 0
-            box.separator()
-            sub = box.row(align=True)
-            sub.operator("kilnkit.add_slot", text="+ Empty Slot", icon='ADD')
-            sub.operator("kilnkit.import_subfolders", text="Batch Subfolders", icon='NEWFOLDER')
-            if any(m.get("kilnkit_lib") for m in bpy.data.materials):
-                box.operator("kilnkit.slot_from_library", text="Import from Library", icon='ASSET_MANAGER')
-            box.label(text="…or drop a texture file", icon='IMPORT')
+            note(box, "…or drop a texture file", 'IMPORT')
+            if any(m for m in obj.data.materials):
+                box.operator("kilnkit.slots_from_object", text="Use Existing Materials", icon='MATERIAL')
+            extra = _section(l, sp, "Other Material Sources", "show_material_sources")
+            if sp.show_material_sources:
+                extra.operator("kilnkit.add_slot", text="+ Empty Slot", icon='ADD')
+                extra.operator("kilnkit.import_subfolders", text="Batch Subfolders", icon='NEWFOLDER')
+                if any(m.get("kilnkit_lib") for m in bpy.data.materials):
+                    extra.operator("kilnkit.slot_from_library", text="Import from Library", icon='ASSET_MANAGER')
             return
 
         # Slot list
@@ -445,16 +403,17 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             "KILNKIT_UL_slot_list", "",
             obj, "kilnkit_slots",
             sp, "active_slot_index",
-            rows=3, maxrows=6
+            rows=2, maxrows=5
         )
         col_btn = row_list.column(align=True)
         col_btn.operator("kilnkit.add_slot",    text="", icon='ADD')
         col_btn.operator("kilnkit.remove_slot", text="", icon='REMOVE').slot_index = sp.active_slot_index
         col_btn.separator()
         col_btn.operator("kilnkit.import_subfolders", text="", icon='NEWFOLDER')
-        col_btn.separator()
-        col_btn.operator("kilnkit.move_slot", text="", icon='TRIA_UP').direction   = 'UP'
-        col_btn.operator("kilnkit.move_slot", text="", icon='TRIA_DOWN').direction = 'DOWN'
+        if len(slots) > 1:
+            col_btn.separator()
+            col_btn.operator("kilnkit.move_slot", text="", icon='TRIA_UP').direction   = 'UP'
+            col_btn.operator("kilnkit.move_slot", text="", icon='TRIA_DOWN').direction = 'DOWN'
 
         # Selected slot detail
         idx = sp.active_slot_index
@@ -464,17 +423,14 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
 
             detail = l.box()
 
-            # Base Color preview + folder/detection info side by side
-            # With an image: thumbnail left + info right; without: info at full width
+            # A compact thumbnail in wide sidebars; detection always gets full width.
             bc_img = fn_get_basecolor_image(obj.data.materials[idx]) if has_mat else None
-            if bc_img:
-                top   = detail.split(factor=0.3)
-                thumb = top.column()
+            if bc_img and panel_width() >= 400:
+                top = detail.row()
                 bc_img.preview_ensure()
-                thumb.template_icon(icon_value=bc_img.preview.icon_id, scale=4)
-                info  = top.column()
-            else:
-                info = detail
+                top.template_icon(icon_value=bc_img.preview.icon_id, scale=2)
+                top.label(text=obj.data.materials[idx].name, icon='MATERIAL')
+            info = detail
 
             # Folder path
             info.prop(entry, "directory", text="")
@@ -499,16 +455,12 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 _ALL_CHANNELS = ('basecolor', 'normal', 'roughness', 'height', 'ao', 'metallic')
                 if found:
                     src = " (.mtlx)" if sidecar else ""   # show the source when a sidecar resolved it
-                    info.label(
-                        text=iface_("Detected{src}: {ch}").format(src=src, ch=_ch_join(found.keys())),
-                        icon='CHECKMARK'
-                    )
+                    note(info, iface_("Detected{src}: {ch}").format(src=src, ch=_ch_join(found.keys())),
+                         'CHECKMARK', translate=False)
                     missing = [c for c in _ALL_CHANNELS if c not in found]
                     if missing:
-                        info.label(
-                            text=iface_("Missing: {ch}").format(ch=_ch_join(missing)),
-                            icon='ERROR'
-                        )
+                        note(info, iface_("Optional maps not supplied: {ch}").format(ch=_ch_join(missing)),
+                             'INFO', translate=False)
                     if has_mat and fn_slot_folder_synced(obj.data.materials[idx], entry.directory) is False:
                         _folder_changed = True
                 else:
@@ -520,7 +472,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             if _folder_changed:
                 wcol = detail.column(align=True)
                 wrow = wcol.row(); wrow.alert = True
-                wrow.label(text="Folder changed — material still uses the old folder", icon='ERROR')
+                note(wrow, "Folder changed — material still uses the old folder", 'ERROR')
                 wcol.operator("kilnkit.rebuild_pbr", text="Reapply from This Folder",
                               icon='FILE_REFRESH').slot_index = idx
 
@@ -528,7 +480,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
 
             # Primary run button + Assign (enabled only with a material — assigns faces in multi-slot)
             row_main = detail.row(align=True)
-            row_main.scale_y = 1.8
+            row_main.scale_y = 1.3
             row_main.operator("kilnkit.one_click", text="Apply PBR", icon='PLAY').slot_index = idx
             asg = row_main.row(align=True)
             asg.scale_x = 0.5
@@ -539,7 +491,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             if has_mat and len(slots) >= 2 and not _slot_has_faces(obj, idx):
                 hint = detail.row()
                 hint.alert = True
-                hint.label(text="Slot not assigned — press [Assign] to apply to faces", icon='ERROR')
+                note(hint, "Slot not assigned — press [Assign] to apply to faces", 'ERROR')
 
             # Mapping method — pick it here, apply it here (Settings keeps the per-method options)
             _active_mat = obj.data.materials[idx] if idx < len(obj.data.materials) else None
@@ -573,6 +525,8 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                          icon='TRIA_DOWN' if sp.show_advanced else 'TRIA_RIGHT',
                          emboss=False)
             if sp.show_advanced:
+                detail.operator("kilnkit.rebuild_pbr", text="Rebuild PBR Nodes",
+                                icon='FILE_REFRESH').slot_index = idx
                 _adv_nodes = (obj.data.materials[idx].node_tree.nodes
                               if has_mat and obj.data.materials[idx].node_tree else None)
                 if _adv_nodes and "KK_Mapping" in _adv_nodes:
@@ -603,6 +557,10 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 else:
                     detail.label(text="Adjustable after applying PBR", icon='INFO')
 
+        batch = _section(l, sp, "Apply to Selected Meshes", "show_batch_material")
+        if sp.show_batch_material:
+            self._draw_batch_material(context, batch, sp, obj)
+
     # ── Settings ─────────────────────────────────────────────
 
     def _draw_settings(self, context, l, sp, obj):
@@ -621,7 +579,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         if sp.show_uv:
             b2.prop(sp, "uv_method", expand=True)
             # One-line purpose of the selected method (always visible, no hover needed)
-            b2.label(text=_MAP_METHOD_DESC.get(sp.uv_method, ""), icon='INFO')
+            note(b2, _MAP_METHOD_DESC.get(sp.uv_method, ""), 'INFO')
             if obj and obj.type == 'MESH' and obj.kilnkit_slots:
                 idx2 = min(sp.active_slot_index, len(obj.kilnkit_slots) - 1)
                 b2.operator("kilnkit.rebuild_pbr",
@@ -629,9 +587,9 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                              icon='FILE_REFRESH').slot_index = idx2
             b2.separator()
             if sp.uv_method in UV_OBJECT_COORD_METHODS:
-                b2.label(text="No unwrap needed — coordinate-based mapping", icon='CHECKMARK')
+                note(b2, "No unwrap needed — coordinate-based mapping", 'CHECKMARK')
             elif sp.uv_method == 'KEEP':
-                b2.label(text="No unwrap — the mesh's own UV map is used", icon='CHECKMARK')
+                note(b2, "No unwrap — the mesh's own UV map is used", 'CHECKMARK')
             else:
                 if sp.uv_method in ('UV', 'SLIM'):
                     b2.prop(sp, "uv_angle_limit", slider=True)
@@ -686,19 +644,16 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 row_step_uv.operator("kilnkit.step_uv", text=_step_uv_text, icon='UV').slot_index = idx
                 col5.operator("kilnkit.step_pbr",   text="3. Build PBR Nodes",              icon='NODE_MATERIAL').slot_index  = idx
             else:
-                b5.label(text="Set up a slot in the Main tab first", icon='INFO')
+                b5.label(text="Set up a slot in the Materials tab first", icon='INFO')
 
         # 6) Utilities
         b6 = _section(l, sp, "Utilities", "show_utils")
         if sp.show_utils:
-            row6 = b6.row(align=True)
-            row6.operator("kilnkit.reset_settings", text="Reset to Defaults", icon='LOOP_BACK')
-            row6.operator("kilnkit.cleanup_images", text="Clean Up Images", icon='TRASH')
-            b6.operator("kilnkit.dedup_materials", text="Merge Duplicate Materials", icon='MATERIAL_DATA')
+            b6.operator("kilnkit.reset_settings", text="Reset to Defaults", icon='LOOP_BACK')
 
     # ── Batch ────────────────────────────────────────────────
 
-    def _draw_batch(self, context, l, sp, obj):
+    def _draw_batch_material(self, context, l, sp, obj):
         selected = [o for o in context.selected_objects if o.type == 'MESH']
         active   = context.active_object
 
@@ -709,7 +664,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             slot_count = len(active.kilnkit_slots)
             status.label(
                 text=iface_("Slots: {n}").format(n=slot_count) if slot_count
-                else iface_("No slots — add them in the Main tab"),
+                else iface_("No slots — add them in the Materials tab"),
                 icon='CHECKMARK' if slot_count else 'ERROR'
             )
         else:
@@ -729,9 +684,13 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         row.enabled = can_run
         row.operator("kilnkit.batch_run", text="▶ Run Batch", icon='FILE_REFRESH')
         if not can_run:
-            l.label(text="Set up a slot in the Main tab first", icon='INFO')
+            l.label(text="Set up a slot in the Materials tab first", icon='INFO')
 
-        # ── Naming ──
+    def _draw_batch(self, context, l, sp, obj):
+        selected = [o for o in context.selected_objects if o.type == 'MESH']
+        active = obj if obj and obj.type == 'MESH' else None
+        note(l, iface_("Selected meshes: {n}").format(n=len(selected)), 'OUTLINER_OB_MESH', translate=False)
+        # Naming is the main preparation action; mesh optimization stays optional.
         l.separator()
         naming = l.box()
         naming.label(text="Naming", icon='SORTALPHA')
@@ -760,7 +719,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             base = fn_naming_base(sp, active)
             if base:
                 pv = naming.box()
-                pv.label(text=f"OBJ  {fn_naming_final(sp, base)}", icon='OBJECT_DATA')
+                note(pv, f"OBJ  {fn_naming_final(sp, base)}", 'OBJECT_DATA', translate=False, inset=12)
                 if sp.naming_rename_mats:
                     mats  = [m for m in active.data.materials if m]
                     multi = len(mats) > 1
@@ -768,7 +727,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                         if not m:
                             continue
                         nm = fn_naming_material_name(sp, base, fn_slot_folder_name(active, i), multi)
-                        pv.label(text=f"MAT  {nm}", icon='MATERIAL')
+                        note(pv, f"MAT  {nm}", 'MATERIAL', translate=False, inset=12)
                 if not sp.naming_base.strip():
                     _si, _b = fn_first_slot_dir(active)
                     if _si is not None:
@@ -779,19 +738,30 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         row_btn.operator("kilnkit.apply_naming",         text="Apply Naming", icon='CHECKMARK')
         row_btn.operator("kilnkit.remove_number_suffix", text="Remove .001", icon='X')
 
-        # ── LOD generation ──
-        l.separator()
-        lod = l.box()
-        lod.label(text="Generate LODs", icon='MOD_DECIM')
-        rowl = lod.row(align=True)
-        rowl.prop(sp, "lod_count")
-        rowl.prop(sp, "lod_step")
-        lod.operator("kilnkit.generate_lod", text="Generate LODs for Selected", icon='MOD_DECIM')
+        cleanup = _section(l, sp, "Cleanup", "show_cleanup")
+        if sp.show_cleanup:
+            cleanup.operator("kilnkit.dedup_materials", text="Merge Duplicate Materials", icon='MATERIAL_DATA')
+            cleanup.operator("kilnkit.cleanup_images", text="Clean Up Images", icon='TRASH')
+        opt = _section(l, sp, "Decimate", "show_mesh_opt")
+        if sp.show_mesh_opt:
+            if active:
+                note(opt, iface_("Polygons  {n:,}").format(n=len(active.data.polygons)), translate=False)
+            opt.prop(sp, "decimate_ratio", slider=True)
+            row = opt.row()
+            row.enabled = bool(active)
+            row.operator("kilnkit.decimate", text="Apply", icon='MOD_DECIM')
+        lod = _section(l, sp, "Levels of Detail", "show_lod")
+        if sp.show_lod:
+            lod.prop(sp, "lod_count")
+            lod.prop(sp, "lod_step")
+            row = lod.row()
+            row.enabled = bool(selected)
+            row.operator("kilnkit.generate_lod", text="Generate LODs for Selected", icon='MOD_DECIM')
 
     # ── Library ──────────────────────────────────────────────
 
     def _draw_library(self, context, l, sp):
-        l.label(text="Folder → material, no mesh needed", icon='ASSET_MANAGER')
+        note(l, "Folder → material, no mesh needed", 'ASSET_MANAGER')
 
         # Builder
         box = l.box()
@@ -812,12 +782,12 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 _tex_cache[dir_abs] = (mtime, found, sidecar)
             if found:
                 src = " (.mtlx)" if sidecar else ""
-                box.label(text=iface_("Detected{src}: {ch}").format(src=src, ch=_ch_join(found.keys())), icon='CHECKMARK')
+                note(box, iface_("Detected{src}: {ch}").format(src=src, ch=_ch_join(found.keys())), 'CHECKMARK', translate=False)
             else:
                 box.label(text="No textures found", icon='ERROR')
         else:
-            box.label(text="Set a folder or choose with the buttons below", icon='INFO')
-        row = box.row(align=True)
+            note(box, "Set a folder or choose with the buttons below", 'INFO')
+        row = box.column(align=True)
         row.scale_y = 1.3
         row.operator("kilnkit.lib_build",            text="Build Material",   icon='ADD')
         row.operator("kilnkit.lib_build_subfolders", text="Batch Subfolders", icon='NEWFOLDER')
@@ -855,7 +825,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         l.label(text="Selected material ↓", icon='RESTRICT_SELECT_OFF')
         det = l.box()
         iid = _mat_icon_id(mat)
-        if iid:
+        if iid and panel_width() >= 400:
             top = det.split(factor=0.3)
             top.template_icon(icon_value=iid, scale=4)
             info = top.column()
@@ -878,7 +848,34 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
     # ── Render ───────────────────────────────────────────────
 
     def _draw_render(self, context, l, sp):
-        l.label(text="Turn finished assets into presentation renders", icon='RENDER_STILL')
+        scene = context.scene
+        selected = [o for o in context.selected_objects if o.type == 'MESH']
+        shot = l.box()
+        output_destination(shot, context)
+        shot.prop(sp, "render_isolate")
+        run = shot.row()
+        run.scale_y = 1.4
+        run.enabled = bool(scene.camera)
+        run.operator("kilnkit.render_save", text="Render & Save", icon='RENDER_STILL')
+        if scene.camera:
+            note(shot, iface_("Scene camera: {name}").format(name=scene.camera.name), 'CAMERA_DATA', translate=False)
+        else:
+            note(shot, "Place the camera first", 'INFO')
+        multi = shot.row()
+        multi.enabled = bool(selected)
+        multi.operator("kilnkit.render_multi_angle", text="Render 4 Views", icon='CAMERA_DATA')
+        output_result(l, context)
+
+        # Quick setup is explicit: no silent replacement of the artist's world or camera.
+        setup = l.box()
+        setup.label(text=iface_("Quick Setup", _I18N_CTX), icon='TOOL_SETTINGS', translate=False)
+        setup.prop(sp, "camera_view", text="Angle")
+        buttons = setup.column(align=True)
+        buttons.enabled = bool(selected)
+        buttons.operator("kilnkit.setup_camera", text="Frame Selected Meshes", icon='CAMERA_DATA')
+        buttons.operator("kilnkit.setup_studio_lights", text="Set Up 3-Point Lights", icon='LIGHT_AREA')
+        if not selected:
+            note(setup, "Select a mesh to enable", 'INFO')
 
         # 1) Environment / background
         b1 = _section(l, sp, "Environment / Background", "show_render_env")
@@ -892,8 +889,8 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
             _w = context.scene.world
             if _w and _w.name != KK_WORLD_NAME:
                 # V10 — applying replaces the current world; the old one stays in the file
-                b1.label(text=iface_("Will replace world '{name}' — the old one stays in the file")
-                         .format(name=_w.name), icon='INFO')
+                note(b1, iface_("Will replace world '{name}' — the old one stays in the file")
+                     .format(name=_w.name), 'INFO', translate=False)
             b1.operator("kilnkit.setup_environment", text="Apply Environment", icon='WORLD')
             b1.separator()
             # Transparent background — expose the built-in property directly (one source of truth, no extra state)
@@ -902,7 +899,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         # 2) Lighting
         b2 = _section(l, sp, "Lighting", "show_render_light")
         if sp.show_render_light:
-            b2.label(text="Key / fill / rim lights, sized to your asset", icon='LIGHT')
+            note(b2, "Key / fill / rim lights, sized to your asset", 'LIGHT')
             b2.operator("kilnkit.setup_studio_lights", text="Set Up 3-Point Lights", icon='LIGHT_AREA')
             if bpy.data.collections.get("KK_Render_Lights"):
                 b2.label(text="Installed: KK_Render_Lights", icon='CHECKMARK')
@@ -911,7 +908,7 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
         b3 = _section(l, sp, "Camera", "show_render_camera")
         if sp.show_render_camera:
             sel = [o for o in context.selected_objects if o.type == 'MESH']
-            b3.label(text="Angle — places one camera at this angle", icon='CAMERA_DATA')
+            note(b3, "Angle — places one camera at this angle", 'CAMERA_DATA')
             b3.prop(sp, "camera_view", expand=True)
             row = b3.row(align=True)
             row.prop(sp, "camera_lens")
@@ -938,11 +935,10 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 b3.label(text="Select a mesh to enable", icon='INFO')
             elif bpy.data.objects.get("KK_Camera"):
                 b3.label(text="Installed: KK_Camera (scene camera)", icon='CHECKMARK')
-                b3.label(text="Freely adjust the camera — Render uses it as-is", icon='INFO')
-            b3.label(text="All 4 angles at once → 'Render 4 Multi-Angles' below", icon='INFO')
+                note(b3, "Freely adjust the camera — Render uses it as-is", 'INFO')
 
         # 4) Render settings / output
-        b4 = _section(l, sp, "Render Settings & Output", "show_render_output")
+        b4 = _section(l, sp, "Render Quality & Files", "show_render_output")
         if sp.show_render_output:
             b4.prop(sp, "render_engine_choice", expand=True)
             b4.prop(sp, "render_samples")
@@ -958,38 +954,8 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 _op = btn_row.operator("kilnkit.set_resolution", text=_lbl)
                 _op.rx, _op.ry = _rx, _ry
             b4.operator("kilnkit.apply_render_settings", text="Apply Render Settings", icon='PREFERENCES')
-            b4.separator()
-            # Native Blender output field, embedded directly (no separate "Save To") so Kilnkit
-            # and F12 write to the same place. Kilnkit uses only the folder + its own file name.
-            b4.prop(context.scene.render, "filepath", text="Output")
-            b4.label(text="Folder only — file name = asset name_angle", icon='INFO')
-            # The effective file-name base — a stale Asset Name silently stamps every
-            # render/sheet with the old name (the mixed-sheet trap), so show it.
-            _nb, _nm, _nover = fn_naming_base_status(context)
-            b4.label(text=iface_("File name base: {base}").format(base=_nb), icon='INFO')
-            if _nover:
-                _r = b4.row()
-                _r.alert = True
-                _r.label(text=iface_("Asset Name overrides — selected mesh is '{m}'").format(m=_nm),
-                         icon='ERROR')
-            # Unsaved + unresolvable (//) or default (/tmp) path → renders fall back to Home.
-            _fp = context.scene.render.filepath or "//"
-            if not bpy.data.filepath and (_fp.startswith("//") or _fp.replace("\\", "/").rstrip("/") == "/tmp"):
-                b4.label(text="Not saved — using Home/Kilnkit_Renders", icon='INFO')
             b4.prop(sp, "render_exist_mode")
-            b4.prop(sp, "render_isolate")
-            r = b4.row()
-            r.scale_y = 1.4
-            r.enabled = bool(context.scene.camera)
-            r.operator("kilnkit.render_save", text="Render & Save", icon='RENDER_STILL')
-            if not context.scene.camera:
-                b4.label(text="Place the camera first", icon='INFO')
-            # 4 multi-angles — places its own camera per angle (needs selected meshes)
-            selm = [o for o in context.selected_objects if o.type == 'MESH']
-            r3 = b4.row()
-            r3.scale_y = 1.2
-            r3.enabled = bool(selm)
-            r3.operator("kilnkit.render_multi_angle", text="4 Multi-Angles (Front · 3/4 · Side · Top)", icon='CAMERA_DATA')
+            note(b4, "Folder only — file name = asset name_angle", 'INFO')
 
         # 5) Turntable — 360° camera orbit animation (places its own camera; needs
         #    selected meshes). Speed is a "seconds per turn" proxy; frames derive.
@@ -1019,10 +985,10 @@ class KILNKIT_PT_Panel(bpy.types.Panel):
                 b5.label(text=iface_("Lower seconds or FPS, or use EEVEE"))
             # Read-only: probing writes to the scene, which draw() is not allowed to do.
             if sp.turntable_format == 'MP4' and fn_ffmpeg_known_missing():
-                b5.label(text="No FFmpeg in this Blender — saves as PNG sequence", icon='INFO')
+                note(b5, "No FFmpeg in this Blender — saves as PNG sequence", 'INFO')
             elif sp.turntable_format == 'MP4' and context.scene.render.film_transparent:
                 # Video has no alpha channel → transparent areas render black.
-                b5.label(text="Transparent bg → MP4 shows black", icon='INFO')
+                note(b5, "Transparent bg → MP4 shows black", 'INFO')
                 b5.label(text="(PNG sequence keeps the alpha)")
             r4 = b5.row()
             r4.scale_y = 1.2

@@ -4,7 +4,7 @@ import bpy
 # Constants & defaults
 # ================================================================
 
-ADDON_VERSION = "v1.1.1"
+ADDON_VERSION = "v1.2.0"
 
 PBR_RULES_DEFAULT = {
     'basecolor': '_c',
@@ -154,7 +154,7 @@ def _preset_update(self, context):
 
 # Panel tab order — canonical ids (must mirror the active_tab enum). The prefs CSV
 # stores a user order; fn_tab_order sanitizes it so renamed/added tabs never break.
-TAB_ORDER_DEFAULT = ('MAIN', 'SETTINGS', 'BATCH', 'LIBRARY', 'RENDER', 'PUBLISH')
+TAB_ORDER_DEFAULT = ('MAIN', 'BATCH', 'LIBRARY', 'RENDER', 'PUBLISH', 'SETTINGS')
 
 
 def fn_tab_order(prefs=None):
@@ -517,12 +517,12 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
     # edition .blend lands on a lite install. Label/description stay edition-neutral.
     active_tab: bpy.props.EnumProperty(
         items=[
-            ('MAIN',     "Main",     "Manage material slots", 0),
+            ('MAIN',     "Materials", "Manage material slots", 0),
             ('SETTINGS', "Settings", "Pipeline settings", 1),
-            ('BATCH',    "Batch",    "Run on multiple objects", 2),
+            ('BATCH',    "Prepare",  "Naming, cleanup, and levels of detail", 2),
             ('LIBRARY',  "Library",  "Build materials from folders without a mesh and register them as assets", 3),
             ('RENDER',   "Render",   "Automate environment, lighting, camera, and render output", 4),
-            ('PUBLISH',  "Publish",  "Batch render and deliver finished assets", 5),
+            ('PUBLISH',  "Output",   "Batch render and deliver finished assets", 5),
         ],
         default='MAIN'
     )
@@ -638,12 +638,16 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
     # Main tab toggle
     show_advanced: bpy.props.BoolProperty(name="Fine Tuning", default=False)
 
-    # Finishing-guide strip (above the tab bar) fold state — a Scene property per the
-    # persistence rule, so each .blend remembers whether the guide is open.
+    # Optional guide: closed on first use, existing explicit .blend choices survive.
     guide_show: bpy.props.BoolProperty(
         name="Finishing Guide",
-        description="Show the five-step finishing journey above the tabs",
-        default=True)
+        description="Show an optional checklist for the selected asset",
+        default=False)
+
+    show_material_sources: bpy.props.BoolProperty(name="Other Material Sources", default=False)
+    show_batch_material: bpy.props.BoolProperty(name="Apply to Selected Meshes", default=False)
+    show_lod: bpy.props.BoolProperty(name="Levels of Detail", default=False)
+    show_cleanup: bpy.props.BoolProperty(name="Cleanup", default=False)
 
     # Node → slider auto-sync (mirrors direct Shader Editor edits)
     auto_sync: bpy.props.BoolProperty(
@@ -771,8 +775,8 @@ class KILNKIT_SceneProps(bpy.types.PropertyGroup):
     show_render_turntable: bpy.props.BoolProperty(name="Turntable", default=False)
 
     # Settings tab section toggles
-    show_pipeline: bpy.props.BoolProperty(name="One-Click Steps", default=True)
-    show_uv:       bpy.props.BoolProperty(name="UV Settings",     default=True)
+    show_pipeline: bpy.props.BoolProperty(name="One-Click Steps", default=False)
+    show_uv:       bpy.props.BoolProperty(name="UV Settings",     default=False)
     show_material: bpy.props.BoolProperty(name="Material Settings", default=False)
     show_suffix:   bpy.props.BoolProperty(name="Filename Rules",  default=False)
     show_step:     bpy.props.BoolProperty(name="Run Steps Individually", default=False)

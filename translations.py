@@ -660,6 +660,43 @@ _SECTION_HEADERS = (
 for _en in _SECTION_HEADERS:
     _ko[("Kilnkit", _en)] = _ko[("*", _en)]
 
+# Task UI vocabulary: explicit context prevents collisions with Blender's catalog.
+_UX_LABELS = {
+    "Materials": "재질",
+    "Slot {n}": "슬롯 {n}",
+    "Prepare": "정리",
+    "Library": "라이브러리",
+    "Render": "렌더",
+    "Output": "출력",
+    "Settings": "설정",
+    "Finishing Guide": "마감 가이드",
+    "Optional checks — use only the steps your asset needs": "필요한 단계만 확인하는 선택형 가이드입니다",
+    "Show an optional checklist for the selected asset": "선택한 에셋의 선택형 마감 체크리스트 표시",
+    "Naming, cleanup, and levels of detail": "이름 통일, 중복 정리, LOD 생성",
+    "Other Material Sources": "다른 방법으로 재질 가져오기",
+    "Apply to Selected Meshes": "선택한 메쉬에 일괄 적용",
+    "Levels of Detail": "LOD 만들기",
+    "Cleanup": "중복·미사용 정리",
+    "Decimate": "폴리곤 줄이기",
+    "Choose textures once. Scale, mapping, and PBR follow your settings.": "텍스처 폴더를 고르면 설정에 따라 스케일·매핑·PBR을 한 번에 적용합니다",
+    "Choose Texture Folder": "텍스처 폴더 선택",
+    "Use Existing Materials": "기존 재질 가져오기",
+    "Optional maps not supplied: {ch}": "선택 맵 없음: {ch}",
+    "Quick Setup": "빠른 촬영 준비",
+    "Scene camera: {name}": "사용할 카메라: {name}",
+    "Frame Selected Meshes": "선택한 메쉬에 카메라 맞추기",
+    "Render 4 Views": "4방향 렌더",
+    "Render Quality & Files": "렌더 품질·파일 설정",
+    "Output Folder": "출력 폴더",
+    "Found in Output Folder": "출력 폴더에서 확인한 파일",
+    "Open Output Folder": "출력 폴더 열기",
+    "Set up a slot in the Materials tab first": "재질 탭에서 슬롯을 먼저 준비하세요",
+    "No slots — add them in the Materials tab": "슬롯 없음 — 재질 탭에서 추가하세요",
+}
+for _en, _tr in _UX_LABELS.items():
+    for _ctx in ("*", "Operator", "Kilnkit"):
+        _ko[(_ctx, _en)] = _tr
+
 translations_dict = {
     "ko_KR": _ko,
 }

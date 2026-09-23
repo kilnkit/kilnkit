@@ -8,7 +8,7 @@ except Exception:
 bl_info = {
     "name":        "Kilnkit",
     "author":      "Deokho Kim",
-    "version":     (1, 1, 1),
+    "version":     (1, 2, 0),
     "blender":     (4, 5, 0),
     "location":    "View3D > Sidebar > Kilnkit",
     "description": "Point at a texture folder and get UV, PBR nodes, and naming automatically",

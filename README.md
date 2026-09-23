@@ -16,10 +16,13 @@ add-on does them for you, with **zero external dependencies** in the core.
 
 ## Features
 
-- **Finishing guide** — a five-step journey strip above every tab (material → UV → naming
-  → shot → output), judged from the scene's *real* state, with an outcome preview (final
-  name, resolution, save location), a receipt when done, and a one-click "next step" that
-  lands on the right controls.
+- **Task-based panels** — Materials, Prepare, Library, Render, and Settings keep related
+  tools together. Tabs show their names even in a narrow sidebar; advanced options start
+  collapsed. Your saved tab choices and custom ordering are preserved.
+- **Optional finishing guide** — a collapsed checklist below the working controls
+  (material → UV → naming → shot → output), judged from the scene's *real* state.
+  Open it when useful; not every asset needs all five steps. Existing explicit choices
+  to keep the guide open in a saved `.blend` are respected.
 - **One-click PBR** — scale → texture mapping → node graph, wired to Principled BSDF.
   The default is a seam-free triplanar **preview** that works on any shape without touching
   your UVs.
@@ -72,11 +75,13 @@ The panel appears in the **3D Viewport sidebar** (press **N**) under the **Kilnk
 
 1. In **Object Mode**, select the mesh you want to finish, then open **N → Kilnkit**
    in the 3D Viewport. Bring your own mesh and texture maps.
-2. On **Main**, click **Start by Picking a Texture Folder** and choose the folder
+2. On **Materials**, click **Choose Texture Folder** and choose the folder
    containing one texture set. This creates a slot and applies PBR automatically.
    For an existing slot, set its folder and press **Apply PBR**.
-3. Check the slot's **Detected** / **Missing** channels and view the result in Blender's
+3. Check the slot's **Detected** channels and view the result in Blender's
    **Material Preview** shading. Adjust texture scale, AO, normal, and height as needed.
+   Missing optional maps are informational; use **Fine Tuning** for sliders and explicit
+   node rebuilding. **Use Existing Materials** brings existing material slots into the panel.
 4. The default **Triplanar** mapping is a preview using object coordinates; it creates
    no UV map. For a mesh with suitable UVs, choose **Keep Existing UV** and press
    **Use Existing UV**. Otherwise use **Create UV Map** when offered, or select an
@@ -86,8 +91,22 @@ The panel appears in the **3D Viewport sidebar** (press **N**) under the **Kilnk
    workflow suited to the destination.
 
 For multiple materials, add a slot per texture folder and assign each to faces. The
-**Batch** tab processes selected meshes; importing subfolders adds slots to the active
-mesh rather than creating new mesh objects. **Library** can build materials without a mesh.
+**Materials → Apply to Selected Meshes** processes selected meshes using the active
+mesh's slots. **Prepare** groups naming, duplicate cleanup, polygon reduction, and LODs.
+Importing subfolders adds slots to the active mesh rather than creating new mesh objects.
+**Library** can build materials without a mesh.
+
+### Render and check the result
+
+On **Render**, check the filename base and resolved folder, then use **Render & Save**
+for the current scene camera or **Render 4 Views** for automatic multi-angle output.
+**Quick Setup** offers explicit camera framing and three-point lights; environment,
+camera refinements, quality, file collision policy, and turntable settings stay in
+their own sections. Enable **Isolate Asset in Renders** to keep other meshes out of a shot.
+
+**Found in Output Folder** shows a matching saved file and a folder shortcut. It reports
+a file on disk, which may be from an earlier run; it does not claim that all finishing
+steps are complete or that the file reflects the current scene.
 
 ### Texture filenames and MaterialX
 
@@ -108,10 +127,16 @@ normal-map orientation and the resulting material visually.
 
 **Free** includes the material/UV workflow, filename rules, batch tools, asset-library
 export, and individual render automation including multi-angle stills and turntables.
-**Full** adds the **Publish** tab with a render queue and contact sheets.
+**Full** adds **Output**, with separate **Contact Sheet** and **Render Queue** tasks.
+The sheet action renders four views and composes them in one run. Sheet layout and
+reuse of earlier renders are optional sections. The queue can **Add Selected Meshes**
+in one action, with one job per selected mesh, then run them together. Individual job
+settings, file handling, and optional `.blend` saving remain available.
 See [the edition comparison](https://kilnkit.com/#editions).
 
 ## Screenshots
+
+The interface screenshots below show v1.1; v1.2 uses the task layout described above.
 
 **One click: texture folder → finished, wired material**
 
